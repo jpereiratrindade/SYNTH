@@ -173,7 +173,24 @@ depende do source tree nem do build do participante.
 - store sem coleta de lixo;
 - assinatura criptográfica além do digest fica para evolução futura.
 
-## 12. Critérios de aceitação
+## 12. Dependências e licenças
+
+As versões mínimas são as verificadas pelo build ou exigidas pela implementação.
+Nenhuma dependência introduz um framework de aplicação no núcleo.
+
+| Dependência | Versão mínima | Função | Licença |
+|---|---:|---|---|
+| OpenSSL `libcrypto` | 3.0 | SHA-256 do artefato e do witness | Apache-2.0 |
+| GNU tar | 1.34 | inspeção e extração do pacote `tar` validado | GPL-3.0-or-later |
+| nlohmann/json | 3.11 | JSON no núcleo; já presente na Fundação | MIT |
+| Python | 3.11 | execução dos testes de integração | PSF-2.0 |
+| jsonschema | 4.10 | validação independente dos JSON Schemas nos testes; já presente na Fundação | MIT |
+
+O participante independente usa Python 3.11+ e somente sua biblioteca padrão
+para o runtime HTTP. CMake 3.25+ (BSD-3-Clause) permanece a ferramenta de build
+dos dois projetos.
+
+## 13. Critérios de aceitação
 
 ```text
 FOUNDATION_VERIFY                  PASS
