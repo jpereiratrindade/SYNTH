@@ -10,7 +10,8 @@ ecossistema ou frontend é simulado.
 ## Construção C++26
 
 Requer um compilador com suporte ao modo C++26, CMake 3.25+,
-`nlohmann/json` 3.11+ e Linux.
+`nlohmann/json` 3.11+, OpenSSL 3.0+, GNU tar e Linux. A suíte de conformidade
+usa Python 3 com `jsonschema` apenas para validar os schemas publicados.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -36,6 +37,32 @@ A saída é legível por pessoas por padrão. Acrescente `--json` para obter a
 representação computável. Cada gate informa sua classe epistemológica e a
 evidência usada para derivá-lo.
 
+## Realizações externas
+
+A primeira fatia vertical aceita artefatos `tar` publicados por uma fonte local:
+
+```bash
+SOURCE=tests/fixtures/local-source
+
+./build/bin/synth search synth-web --source "$SOURCE"
+./build/bin/synth info synth-web --source "$SOURCE"
+./build/bin/synth install synth-web --source "$SOURCE"
+./build/bin/synth installed
+
+./build/bin/synth evidence
+./build/bin/synth activate synth-web
+./build/bin/synth relations
+./build/bin/synth surfaces
+
+./build/bin/synth deactivate synth-web
+./build/bin/synth remove synth-web
+```
+
+`install` verifica SHA-256 e registra conteúdo imutável, sem ativar. `activate`
+resolve superfícies públicas, inicia uma candidata isolada, verifica readiness e
+valida seu witness antes da promoção. Relações só aparecem como `OBSERVED`
+depois dessa testemunha factual.
+
 `synth status` descreve a realização local. A aceitação do estado no repositório
 também exige o workflow `foundation` verde no `main`.
 
@@ -54,6 +81,7 @@ depende do checkout usado na compilação.
 
 ```text
 $XDG_CONFIG_HOME/synth/   somente configuração declarada pelo usuário; pode não existir
+$XDG_DATA_HOME/synth/     store de artefatos imutáveis
 $XDG_STATE_HOME/synth/    evidência observacional persistente
 $XDG_RUNTIME_DIR/synth/   estado efêmero do processo
 ```
@@ -69,6 +97,7 @@ observação atômica. Na ausência de configuração humana, a evidência regis
 - `docs/SYNTH-PATCH-FOUNDATION-001-v0.1.0.md`
 - `docs/SYNTH-FOUNDATION-CORRECTION-001-v0.1.0.md`
 - `docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md`
+- `docs/SYNTH-REALIZATION-001-v0.1.0.md`
 
 ## Licença
 
