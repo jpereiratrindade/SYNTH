@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     container: gcc:16
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install controlled build tools
         run: apt-get update && apt-get install -y --no-install-recommends cmake
       - name: Record toolchain
