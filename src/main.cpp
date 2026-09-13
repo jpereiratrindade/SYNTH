@@ -298,6 +298,18 @@ bool valid_surface(const Surface& surface) {
          !surface.direction.empty() && !surface.media_type.empty() && !surface.observability.empty() && !surface.metadata.empty();
 }
 
+bool grounded_relation(const json& relation) {
+  try {
+    return relation.is_object() && !relation.value("id", "").empty() &&
+      !relation.value("source", "").empty() && !relation.value("target", "").empty() &&
+      !relation.value("surface", "").empty() && relation.value("epistemic_class", "") == "OBSERVED" &&
+      !relation.value("observed_at", "").empty() &&
+      fs::is_regular_file(relation.at("evidence_ref").get<std::string>());
+  } catch (const json::exception&) {
+    return false;
+  }
+}
+
 struct Gate {
   std::string name;
   bool pass;
@@ -331,6 +343,7 @@ std::vector<Gate> foundation_gates(const Paths& paths, const fs::path& data) {
   const bool relation_schema = validate_json_schema(data / "schemas/relation.schema.json",
     "urn:synth:schema:relation:0.1.0",
     {"id", "source", "target", "surface", "status", "epistemic_class", "evidence_ref", "observed_at"});
+  const bool relations_grounded = std::all_of(relations.begin(), relations.end(), grounded_relation);
   std::string context_detail;
   const bool context_compatible = validate_context_metadata(foundation, context_detail);
   const bool human_cli = !human_version().empty() && human_version().front() != '{' && human_relations() == "No relations observed.\n";
@@ -346,7 +359,7 @@ std::vector<Gate> foundation_gates(const Paths& paths, const fs::path& data) {
     {"RESOURCE_OBSERVATION", resources_observed, "OBSERVED", "rss_kib=" + std::to_string(sample.rss_kib) + ", max_rss_kib=" + std::to_string(sample.max_rss_kib) + ", cpu_seconds=" + std::to_string(sample.cpu_seconds)},
     {"SURFACE_MODEL_GENERIC", surface_schema && surface_instances, "DERIVED", "JSON Schema Draft 2020-12: " + (data / "schemas/surface.schema.json").string()},
     {"RELATION_MODEL_GENERIC", relation_schema, "DERIVED", "JSON Schema Draft 2020-12: " + (data / "schemas/relation.schema.json").string()},
-    {"NO_FAKE_RELATIONS", relations.empty(), "OBSERVED", "zero relation observation records"},
+    {"NO_FAKE_RELATIONS", relations_grounded, "DERIVED", std::to_string(relations.size()) + " relation record(s), each grounded in an existing runtime witness"},
     {"CONTEXTLAB_DOCUMENT_COMPAT", context_compatible, "DERIVED", context_detail},
     {"CLI_HUMAN_READABLE", human_cli, "DERIVED", "human renderers verified; JSON remains opt-in"},
     {"SECOND_RUN_NO_OP", read_only_no_op, "OBSERVED", "read-only observation changed no configuration, state or runtime entry; conformance repeats and fingerprints commands"}

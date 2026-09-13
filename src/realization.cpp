@@ -395,6 +395,30 @@ bool process_alive(const pid_t pid) {
   return pid > 0 && (::kill(pid, 0) == 0 || errno == EPERM);
 }
 
+std::optional<unsigned long long> process_start_ticks(const pid_t pid) {
+  std::ifstream input("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  if (!std::getline(input, line)) return std::nullopt;
+  const auto command_end = line.rfind(')');
+  if (command_end == std::string::npos || command_end + 2 >= line.size()) return std::nullopt;
+  std::istringstream fields(line.substr(command_end + 2));
+  std::string field;
+  for (int index = 0; index <= 19; ++index) {
+    if (!(fields >> field)) return std::nullopt;
+  }
+  try {
+    return std::stoull(field);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+bool active_process_matches(const json& active) {
+  const auto pid = active.value("pid", 0);
+  const auto observed_start = process_start_ticks(pid);
+  return process_alive(pid) && observed_start && *observed_start == active.value("process_start_ticks", 0ULL);
+}
+
 std::optional<json> evidence_surface(const Roots& roots) {
   const auto path = roots.state / "evidence/latest.json";
   if (!fs::is_regular_file(path)) return std::nullopt;
@@ -610,7 +634,7 @@ json active_records(const Roots& roots) {
     if (!fs::is_regular_file(active)) continue;
     try {
       const auto record = read_json(active);
-      if (process_alive(record.value("pid", 0))) records.push_back(record);
+      if (active_process_matches(record)) records.push_back(record);
     } catch (const std::exception&) {
     }
   }
@@ -646,6 +670,7 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
 
   const auto realization_id = operation_id(identity);
   const auto candidate = roots.runtime / "candidates" / realization_id;
+  const auto active_runtime = roots.runtime / "active" / identity;
   const auto witness_path = candidate / "witness.json";
   const auto resolved_path = candidate / "resolved-surfaces.json";
   const auto candidate_log = candidate / "candidate.log";
@@ -658,8 +683,11 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
   const auto arguments = manifest.at("realization").at("arguments").get<std::vector<std::string>>();
   const auto readiness_arguments = manifest.at("readiness").at("arguments").get<std::vector<std::string>>();
   pid_t pid = 0;
+  bool active_record_written = false;
   try {
     pid = spawn_candidate(executable, arguments, candidate, environment, candidate_log);
+    const auto start_ticks = process_start_ticks(pid);
+    if (!start_ticks) throw std::runtime_error("candidate process identity could not be observed");
     const auto timeout = std::chrono::milliseconds(manifest.at("readiness").value("timeout_ms", 0));
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     bool ready = false;
@@ -681,15 +709,17 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
     const auto realization_state = roots.state / "realizations" / identity;
     const auto preserved_witness = realization_state / ("witness-" + realization_id + ".json");
     write_json_atomic(preserved_witness, witness);
-    const auto active_runtime = roots.runtime / "active" / identity;
+    const auto witness_digest = sha256(preserved_witness);
     ensure_directory(active_runtime.parent_path());
     fs::rename(candidate, active_runtime);
     const json active{
       {"identity", identity}, {"version", installation.at("version")}, {"digest", installation.at("digest")},
-      {"realization_id", realization_id}, {"pid", pid}, {"runtime_path", active_runtime.string()},
-      {"witness_path", preserved_witness.string()}, {"resolved_surfaces", resolved}, {"activated_at", timestamp()}
+      {"realization_id", realization_id}, {"pid", pid}, {"process_start_ticks", *start_ticks},
+      {"runtime_path", active_runtime.string()}, {"witness_path", preserved_witness.string()},
+      {"witness_sha256", witness_digest}, {"resolved_surfaces", resolved}, {"activated_at", timestamp()}
     };
     write_json_atomic(active_path, active);
+    active_record_written = true;
     record_transaction(roots, "activate", identity, "ACTIVE", {{"realization_id", realization_id}, {"pid", pid}, {"rss_kib", rss_kib}, {"witness", preserved_witness.string()}});
     if (as_json) std::cout << json{{"status", "ACTIVE"}, {"candidate", "VERIFIED"}, {"realization", active}}.dump() << '\n';
     else std::cout << "Candidate\n  " << identity << ' ' << installation.at("version").get<std::string>()
@@ -699,6 +729,8 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
     stop_process(pid);
     std::error_code ignored;
     fs::remove_all(candidate, ignored);
+    fs::remove_all(active_runtime, ignored);
+    if (active_record_written) fs::remove(active_path, ignored);
     record_transaction(roots, "activate", identity, "REJECTED", {{"reason", error.what()}});
     throw OperationFailure("REJECTED", std::string(error.what()) + "; active state unchanged");
   }
@@ -715,7 +747,7 @@ int deactivate_command(const std::vector<std::string>& args, bool as_json, const
     return 0;
   }
   const auto active = read_json(active_path);
-  stop_process(active.value("pid", 0));
+  if (active_process_matches(active)) stop_process(active.value("pid", 0));
   std::error_code ignored;
   fs::remove_all(fs::path(active.value("runtime_path", "")), ignored);
   if (!fs::remove(active_path)) throw std::runtime_error("cannot remove active realization record");
@@ -857,7 +889,9 @@ json active_surfaces(const Roots& roots) {
   json surfaces = json::array();
   for (const auto& active : active_records(roots)) {
     try {
-      const auto witness = read_json(active.at("witness_path").get<std::string>());
+      const fs::path witness_path = active.at("witness_path").get<std::string>();
+      if (sha256(witness_path) != active.value("witness_sha256", "")) continue;
+      const auto witness = read_json(witness_path);
       if (witness.value("realization_id", "") != active.value("realization_id", "") ||
           witness.at("readiness").value("status", "") != "READY") continue;
       for (const auto& surface : witness.at("provided_surfaces")) surfaces.push_back(surface);
@@ -872,6 +906,7 @@ json observed_relations(const Roots& roots) {
   for (const auto& active : active_records(roots)) {
     try {
       const auto witness_path = active.at("witness_path").get<std::string>();
+      if (sha256(witness_path) != active.value("witness_sha256", "")) continue;
       const auto witness = read_json(witness_path);
       if (witness.value("realization_id", "") != active.value("realization_id", "") ||
           witness.at("readiness").value("status", "") != "READY") continue;
