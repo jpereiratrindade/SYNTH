@@ -8,6 +8,7 @@ test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT
 
 export XDG_CONFIG_HOME="$test_root/config"
+export XDG_DATA_HOME="$test_root/data"
 export XDG_STATE_HOME="$test_root/state"
 export XDG_RUNTIME_DIR="$test_root/runtime"
 
@@ -113,6 +114,7 @@ fi
 
 unset SYNTH_DATA_DIR
 export XDG_CONFIG_HOME="$test_root/installed-config"
+export XDG_DATA_HOME="$test_root/installed-data"
 export XDG_STATE_HOME="$test_root/installed-state"
 export XDG_RUNTIME_DIR="$test_root/installed-runtime"
 (
@@ -122,6 +124,7 @@ export XDG_RUNTIME_DIR="$test_root/installed-runtime"
   "$installed_synth" status | grep -F "SYSTEM_SYNTH_READY     PASS"
 )
 test ! -e "$XDG_CONFIG_HOME/synth"
+test ! -e "$XDG_DATA_HOME/synth"
 test ! -e "$XDG_STATE_HOME/synth"
 test ! -e "$XDG_RUNTIME_DIR/synth"
 
