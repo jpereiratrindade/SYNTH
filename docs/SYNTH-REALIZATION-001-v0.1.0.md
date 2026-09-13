@@ -6,7 +6,7 @@
   "document": {
     "id": "SYNTH-REALIZATION-001",
     "version": "0.1.0",
-    "status": "design-candidate",
+    "status": "implemented",
     "title": "Primeira realização externa gerenciada pelo Sistema SYNTH",
     "project_name": "SYNTH",
     "repository": "jpereiratrindade/SYNTH",
