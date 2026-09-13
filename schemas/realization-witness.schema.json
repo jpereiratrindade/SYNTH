@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synth:schema:realization-witness:0.1.0",
+  "title": "SYNTH realization runtime witness",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "const": "urn:synth:schema:realization-witness:0.1.0" },
+    "schema_version": { "const": "0.1.0" },
+    "identity": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "realization_id": { "type": "string", "minLength": 1 },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pid": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["pid"]
+    },
+    "provided_surfaces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/observedSurface" }
+    },
+    "consumed_surfaces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/consumedSurface" }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": { "const": "READY" },
+        "mechanism": { "type": "string", "minLength": 1 },
+        "checked_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["status", "mechanism", "checked_at"]
+    },
+    "observed_at": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "observedSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "owner": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "locator": { "type": "string", "minLength": 1 },
+        "direction": { "enum": ["inbound", "outbound", "bidirectional"] },
+        "media_type": { "type": "string", "minLength": 1 },
+        "observability": { "const": "runtime-witness" },
+        "metadata": { "type": "string" }
+      },
+      "required": ["id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"]
+    },
+    "consumedSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "locator": { "type": "string", "minLength": 1 },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "evidence_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "required": ["id", "locator", "observed_at", "evidence_sha256"]
+    }
+  },
+  "required": [
+    "$schema", "schema_version", "identity", "version", "realization_id",
+    "process", "provided_surfaces", "consumed_surfaces", "readiness", "observed_at"
+  ]
+}

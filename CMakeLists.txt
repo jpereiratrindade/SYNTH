@@ -25,6 +25,7 @@ configure_file(docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md "${SYNTH_BUILD_DATA
 configure_file(schemas/surface.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/surface.schema.json" COPYONLY)
 configure_file(schemas/relation.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/relation.schema.json" COPYONLY)
 configure_file(schemas/artifact-manifest.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/artifact-manifest.schema.json" COPYONLY)
+configure_file(schemas/realization-witness.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/realization-witness.schema.json" COPYONLY)
 
 include(GNUInstallDirs)
 install(TARGETS synth RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

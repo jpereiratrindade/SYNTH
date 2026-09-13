@@ -3,18 +3,23 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 #include <openssl/evp.h>
@@ -23,6 +28,17 @@ namespace synth::realization {
 namespace {
 
 constexpr std::string_view manifest_schema = "urn:synth:schema:artifact-manifest:0.1.0";
+constexpr std::string_view witness_schema = "urn:synth:schema:realization-witness:0.1.0";
+
+class OperationFailure : public std::runtime_error {
+ public:
+  OperationFailure(std::string status, std::string message)
+      : std::runtime_error(std::move(message)), status_(std::move(status)) {}
+  const std::string& status() const { return status_; }
+
+ private:
+  std::string status_;
+};
 
 struct CommandResult {
   int exit_code{};
@@ -200,6 +216,14 @@ void validate_manifest(const json& manifest) {
     const auto& realization = manifest.at("realization");
     if (!valid_relative_path(realization.value("entrypoint", "")) || !realization.at("arguments").is_array() ||
         !realization.at("environment_allowed").is_array()) throw std::runtime_error("realization declaration is invalid");
+    const std::set<std::string> supported_environment{
+      "SYNTH_REALIZATION_ID", "SYNTH_WITNESS_PATH", "SYNTH_RESOLVED_SURFACES_PATH"
+    };
+    for (const auto& name : realization.at("environment_allowed")) {
+      if (!name.is_string() || !supported_environment.contains(name.get<std::string>())) {
+        throw std::runtime_error("realization requests an unsupported environment variable");
+      }
+    }
     const auto& readiness = manifest.at("readiness");
     if (readiness.value("type", "") != "command" || !valid_relative_path(readiness.value("entrypoint", "")) ||
         !readiness.at("arguments").is_array() || readiness.value("timeout_ms", 0) <= 0) {
@@ -363,6 +387,365 @@ json installed_records(const Roots& roots) {
   return records;
 }
 
+fs::path active_record_path(const Roots& roots, std::string_view identity) {
+  return roots.state / "realizations" / std::string(identity) / "active.json";
+}
+
+bool process_alive(const pid_t pid) {
+  return pid > 0 && (::kill(pid, 0) == 0 || errno == EPERM);
+}
+
+std::optional<json> evidence_surface(const Roots& roots) {
+  const auto path = roots.state / "evidence/latest.json";
+  if (!fs::is_regular_file(path)) return std::nullopt;
+  try {
+    const auto evidence = read_json(path);
+    if (evidence.value("identity", "") != "SYNTH" || evidence.value("epistemic_class", "") != "OBSERVED") return std::nullopt;
+    const auto& surfaces = evidence.at("observed_surfaces");
+    const auto observed = std::find_if(surfaces.begin(), surfaces.end(), [](const auto& surface) {
+      return surface.value("id", "") == "synth.evidence";
+    });
+    if (observed == surfaces.end()) return std::nullopt;
+    return std::optional<json>{json{
+      {"id", "synth.evidence"}, {"owner", "SYNTH"}, {"kind", "file"},
+      {"locator", path.string()}, {"direction", "outbound"}, {"media_type", "application/json"},
+      {"observability", "self-observed"}, {"metadata", "validated public evidence document"}
+    }};
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+json available_surfaces(const Roots& roots) {
+  json surfaces = active_surfaces(roots);
+  if (const auto evidence = evidence_surface(roots)) surfaces.push_back(*evidence);
+  return surfaces;
+}
+
+json resolve_requirements(const json& manifest, const Roots& roots) {
+  const auto available = available_surfaces(roots);
+  json resolved = json::array();
+  for (const auto& requirement : manifest.at("requires").at("surfaces")) {
+    const auto id = requirement.at("id").get<std::string>();
+    const auto match = std::find_if(available.begin(), available.end(), [&id](const auto& surface) {
+      return surface.value("id", "") == id;
+    });
+    if (match == available.end()) {
+      throw OperationFailure("BLOCKED", "required surface is not observed: " + id +
+        "; produce or activate that public surface before retrying");
+    }
+    auto surface = *match;
+    surface["resolution"] = "RESOLVED";
+    resolved.push_back(std::move(surface));
+  }
+  return resolved;
+}
+
+fs::path payload_entry(const json& installation, std::string_view relative) {
+  if (!valid_relative_path(relative)) throw std::runtime_error("artifact entrypoint is not a safe relative path");
+  const auto payload = fs::path(installation.at("store_path").get<std::string>()) / "payload";
+  const auto candidate = payload / relative;
+  if (!path_within(payload, candidate) || !fs::is_regular_file(candidate) || ::access(candidate.c_str(), X_OK) != 0) {
+    throw std::runtime_error("artifact entrypoint is absent or not executable: " + candidate.string());
+  }
+  return fs::canonical(candidate);
+}
+
+std::vector<std::string> candidate_environment(const json& manifest, std::string_view realization_id,
+                                                const fs::path& witness_path, const fs::path& resolved_path) {
+  const std::map<std::string, std::string> available{
+    {"SYNTH_REALIZATION_ID", std::string(realization_id)},
+    {"SYNTH_WITNESS_PATH", witness_path.string()},
+    {"SYNTH_RESOLVED_SURFACES_PATH", resolved_path.string()}
+  };
+  std::vector<std::string> environment{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1"};
+  for (const auto& declared : manifest.at("realization").at("environment_allowed")) {
+    const auto name = declared.get<std::string>();
+    environment.push_back(name + "=" + available.at(name));
+  }
+  return environment;
+}
+
+std::vector<char*> process_vector(std::vector<std::string>& values) {
+  std::vector<char*> result;
+  result.reserve(values.size() + 1);
+  for (auto& value : values) result.push_back(value.data());
+  result.push_back(nullptr);
+  return result;
+}
+
+pid_t spawn_candidate(const fs::path& executable, const std::vector<std::string>& declared_arguments,
+                      const fs::path& working_directory, std::vector<std::string> environment,
+                      const fs::path& log_path) {
+  const pid_t child = ::fork();
+  if (child < 0) throw std::runtime_error("cannot fork candidate process");
+  if (child == 0) {
+    if (::setsid() < 0 || ::chdir(working_directory.c_str()) != 0) _exit(126);
+    const int log = ::open(log_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0600);
+    if (log < 0) _exit(126);
+    ::dup2(log, STDOUT_FILENO);
+    ::dup2(log, STDERR_FILENO);
+    ::close(log);
+    std::vector<std::string> arguments{executable.string()};
+    arguments.insert(arguments.end(), declared_arguments.begin(), declared_arguments.end());
+    auto argv = process_vector(arguments);
+    auto envp = process_vector(environment);
+    ::execve(executable.c_str(), argv.data(), envp.data());
+    _exit(127);
+  }
+  return child;
+}
+
+int run_candidate_command(const fs::path& executable, const std::vector<std::string>& declared_arguments,
+                          const fs::path& working_directory, std::vector<std::string> environment,
+                          const fs::path& log_path) {
+  const pid_t child = ::fork();
+  if (child < 0) throw std::runtime_error("cannot fork readiness command");
+  if (child == 0) {
+    if (::chdir(working_directory.c_str()) != 0) _exit(126);
+    const int log = ::open(log_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0600);
+    if (log < 0) _exit(126);
+    ::dup2(log, STDOUT_FILENO);
+    ::dup2(log, STDERR_FILENO);
+    ::close(log);
+    std::vector<std::string> arguments{executable.string()};
+    arguments.insert(arguments.end(), declared_arguments.begin(), declared_arguments.end());
+    auto argv = process_vector(arguments);
+    auto envp = process_vector(environment);
+    ::execve(executable.c_str(), argv.data(), envp.data());
+    _exit(127);
+  }
+  int status = 0;
+  while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+}
+
+void stop_process(const pid_t pid) {
+  if (pid <= 0) return;
+  ::kill(-pid, SIGTERM);
+  ::kill(pid, SIGTERM);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (process_alive(pid) && std::chrono::steady_clock::now() < deadline) {
+    int status = 0;
+    ::waitpid(pid, &status, WNOHANG);
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  if (process_alive(pid)) {
+    ::kill(-pid, SIGKILL);
+    ::kill(pid, SIGKILL);
+  }
+  int status = 0;
+  while (::waitpid(pid, &status, WNOHANG) < 0 && errno == EINTR) {}
+}
+
+long process_rss_kib(const pid_t pid) {
+  std::ifstream status("/proc/" + std::to_string(pid) + "/status");
+  std::string key;
+  while (status >> key) {
+    if (key == "VmRSS:") {
+      long value = 0;
+      status >> value;
+      return value;
+    }
+    std::string ignored;
+    std::getline(status, ignored);
+  }
+  return 0;
+}
+
+void validate_witness_schema_document(const Roots& roots) {
+  const auto schema = read_json(roots.resources / "schemas/realization-witness.schema.json");
+  if (schema.value("$schema", "") != "https://json-schema.org/draft/2020-12/schema" ||
+      schema.value("$id", "") != witness_schema || schema.value("type", "") != "object") {
+    throw std::runtime_error("realization witness schema is invalid");
+  }
+}
+
+json validate_witness(const fs::path& witness_path, const json& installation, std::string_view realization_id,
+                      const pid_t pid, const json& resolved, const Roots& roots) {
+  validate_witness_schema_document(roots);
+  const auto witness = read_json(witness_path);
+  const auto& manifest = installation.at("manifest");
+  try {
+    if (witness.value("$schema", "") != witness_schema || witness.value("schema_version", "") != "0.1.0" ||
+        witness.value("identity", "") != manifest.at("identity").get<std::string>() ||
+        witness.value("version", "") != manifest.at("version").get<std::string>() ||
+        witness.value("realization_id", "") != realization_id || witness.at("process").value("pid", 0) != pid ||
+        witness.at("readiness").value("status", "") != "READY" || witness.value("observed_at", "").empty()) {
+      throw std::runtime_error("witness identity, process or readiness does not match the candidate");
+    }
+    const auto& provided = witness.at("provided_surfaces");
+    const auto& consumed = witness.at("consumed_surfaces");
+    if (!provided.is_array() || !consumed.is_array()) throw std::runtime_error("witness surfaces are not arrays");
+
+    for (const auto& declaration : manifest.at("provides").at("surfaces")) {
+      const auto id = declaration.at("id").get<std::string>();
+      const auto match = std::find_if(provided.begin(), provided.end(), [&id](const auto& surface) {
+        return surface.value("id", "") == id && surface.value("observability", "") == "runtime-witness" &&
+               !surface.value("locator", "").empty();
+      });
+      if (match == provided.end()) throw std::runtime_error("witness does not observe declared provided surface: " + id);
+    }
+    for (const auto& resolution : resolved) {
+      const auto id = resolution.at("id").get<std::string>();
+      const auto locator = resolution.at("locator").get<std::string>();
+      const auto match = std::find_if(consumed.begin(), consumed.end(), [&id, &locator](const auto& surface) {
+        return surface.value("id", "") == id && surface.value("locator", "") == locator &&
+               valid_sha256(surface.value("evidence_sha256", "")) && !surface.value("observed_at", "").empty();
+      });
+      if (match == consumed.end()) throw std::runtime_error("witness does not prove consumption of resolved surface: " + id);
+    }
+  } catch (const json::exception& error) {
+    throw std::runtime_error("witness does not conform to the required model: " + std::string(error.what()));
+  }
+  return witness;
+}
+
+json active_records(const Roots& roots) {
+  json records = json::array();
+  const auto directory = roots.state / "realizations";
+  if (!fs::is_directory(directory)) return records;
+  for (const auto& participant : fs::directory_iterator(directory)) {
+    const auto active = participant.path() / "active.json";
+    if (!fs::is_regular_file(active)) continue;
+    try {
+      const auto record = read_json(active);
+      if (process_alive(record.value("pid", 0))) records.push_back(record);
+    } catch (const std::exception&) {
+    }
+  }
+  return records;
+}
+
+int activate_command(const std::vector<std::string>& args, bool as_json, const Roots& roots) {
+  if (args.size() != 2) throw std::runtime_error("usage: synth activate <identity>");
+  const auto identity = args[1];
+  if (!valid_identity(identity)) throw std::runtime_error("invalid realization identity");
+  const auto installation_path = roots.state / "installations" / (identity + ".json");
+  if (!fs::is_regular_file(installation_path)) throw OperationFailure("BLOCKED", "identity is not installed: " + identity);
+  const auto active_path = active_record_path(roots, identity);
+  if (fs::is_regular_file(active_path)) {
+    const auto active = read_json(active_path);
+    if (process_alive(active.value("pid", 0))) {
+      if (as_json) std::cout << json{{"status", "NO_OP"}, {"identity", identity}, {"reason", "already active"}}.dump() << '\n';
+      else std::cout << identity << " is already active.\nNo changes required.\n";
+      return 0;
+    }
+    throw OperationFailure("BLOCKED", "a stale active record exists; run synth deactivate " + identity + " before retrying");
+  }
+
+  const auto installation = read_json(installation_path);
+  const auto& manifest = installation.at("manifest");
+  json resolved;
+  try {
+    resolved = resolve_requirements(manifest, roots);
+  } catch (const OperationFailure& failure) {
+    record_transaction(roots, "activate", identity, failure.status(), {{"reason", failure.what()}});
+    throw;
+  }
+
+  const auto realization_id = operation_id(identity);
+  const auto candidate = roots.runtime / "candidates" / realization_id;
+  const auto witness_path = candidate / "witness.json";
+  const auto resolved_path = candidate / "resolved-surfaces.json";
+  const auto candidate_log = candidate / "candidate.log";
+  const auto readiness_log = candidate / "readiness.log";
+  ensure_directory(candidate);
+  write_json_atomic(resolved_path, {{"epistemic_class", "RESOLVED"}, {"surfaces", resolved}});
+  const auto environment = candidate_environment(manifest, realization_id, witness_path, resolved_path);
+  const auto executable = payload_entry(installation, manifest.at("realization").at("entrypoint").get<std::string>());
+  const auto readiness_executable = payload_entry(installation, manifest.at("readiness").at("entrypoint").get<std::string>());
+  const auto arguments = manifest.at("realization").at("arguments").get<std::vector<std::string>>();
+  const auto readiness_arguments = manifest.at("readiness").at("arguments").get<std::vector<std::string>>();
+  pid_t pid = 0;
+  try {
+    pid = spawn_candidate(executable, arguments, candidate, environment, candidate_log);
+    const auto timeout = std::chrono::milliseconds(manifest.at("readiness").value("timeout_ms", 0));
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    bool ready = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      if (!process_alive(pid)) throw std::runtime_error("candidate exited before readiness");
+      if (run_candidate_command(readiness_executable, readiness_arguments, candidate, environment, readiness_log) == 0) {
+        ready = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    if (!ready) throw std::runtime_error("candidate readiness timed out");
+    const auto rss_kib = process_rss_kib(pid);
+    if (manifest.contains("resources") && manifest.at("resources").contains("memory_mib")) {
+      const auto limit_kib = manifest.at("resources").at("memory_mib").get<long>() * 1024;
+      if (rss_kib <= 0 || rss_kib > limit_kib) throw std::runtime_error("candidate exceeded or could not prove its memory envelope");
+    }
+    const auto witness = validate_witness(witness_path, installation, realization_id, pid, resolved, roots);
+    const auto realization_state = roots.state / "realizations" / identity;
+    const auto preserved_witness = realization_state / ("witness-" + realization_id + ".json");
+    write_json_atomic(preserved_witness, witness);
+    const auto active_runtime = roots.runtime / "active" / identity;
+    ensure_directory(active_runtime.parent_path());
+    fs::rename(candidate, active_runtime);
+    const json active{
+      {"identity", identity}, {"version", installation.at("version")}, {"digest", installation.at("digest")},
+      {"realization_id", realization_id}, {"pid", pid}, {"runtime_path", active_runtime.string()},
+      {"witness_path", preserved_witness.string()}, {"resolved_surfaces", resolved}, {"activated_at", timestamp()}
+    };
+    write_json_atomic(active_path, active);
+    record_transaction(roots, "activate", identity, "ACTIVE", {{"realization_id", realization_id}, {"pid", pid}, {"rss_kib", rss_kib}, {"witness", preserved_witness.string()}});
+    if (as_json) std::cout << json{{"status", "ACTIVE"}, {"candidate", "VERIFIED"}, {"realization", active}}.dump() << '\n';
+    else std::cout << "Candidate\n  " << identity << ' ' << installation.at("version").get<std::string>()
+                   << "\n\nResolve requirements ... PASS\nStart isolated realization ... PASS\nReadiness ... PASS\nWitness ... PASS\nActivate ... PASS\n";
+    return 0;
+  } catch (const std::exception& error) {
+    stop_process(pid);
+    std::error_code ignored;
+    fs::remove_all(candidate, ignored);
+    record_transaction(roots, "activate", identity, "REJECTED", {{"reason", error.what()}});
+    throw OperationFailure("REJECTED", std::string(error.what()) + "; active state unchanged");
+  }
+}
+
+int deactivate_command(const std::vector<std::string>& args, bool as_json, const Roots& roots) {
+  if (args.size() != 2) throw std::runtime_error("usage: synth deactivate <identity>");
+  const auto identity = args[1];
+  if (!valid_identity(identity)) throw std::runtime_error("invalid realization identity");
+  const auto active_path = active_record_path(roots, identity);
+  if (!fs::is_regular_file(active_path)) {
+    if (as_json) std::cout << json{{"status", "NO_OP"}, {"identity", identity}, {"reason", "not active"}}.dump() << '\n';
+    else std::cout << identity << " is not active.\nNo changes required.\n";
+    return 0;
+  }
+  const auto active = read_json(active_path);
+  stop_process(active.value("pid", 0));
+  std::error_code ignored;
+  fs::remove_all(fs::path(active.value("runtime_path", "")), ignored);
+  if (!fs::remove(active_path)) throw std::runtime_error("cannot remove active realization record");
+  record_transaction(roots, "deactivate", identity, "DEACTIVATED", {{"realization_id", active.value("realization_id", "")}});
+  if (as_json) std::cout << json{{"status", "DEACTIVATED"}, {"identity", identity}}.dump() << '\n';
+  else std::cout << identity << " deactivated successfully.\n";
+  return 0;
+}
+
+int remove_command(const std::vector<std::string>& args, bool as_json, const Roots& roots) {
+  if (args.size() != 2) throw std::runtime_error("usage: synth remove <identity>");
+  const auto identity = args[1];
+  if (!valid_identity(identity)) throw std::runtime_error("invalid realization identity");
+  if (fs::is_regular_file(active_record_path(roots, identity))) {
+    throw OperationFailure("BLOCKED", identity + " is active; run 'synth deactivate " + identity + "' before removal");
+  }
+  const auto installation_path = roots.state / "installations" / (identity + ".json");
+  if (!fs::is_regular_file(installation_path)) {
+    if (as_json) std::cout << json{{"status", "NO_OP"}, {"identity", identity}, {"reason", "not installed"}}.dump() << '\n';
+    else std::cout << identity << " is not installed.\nNo changes required.\n";
+    return 0;
+  }
+  const auto installation = read_json(installation_path);
+  if (!fs::remove(installation_path)) throw std::runtime_error("cannot remove installation record");
+  record_transaction(roots, "remove", identity, "REMOVED", {{"digest", installation.value("digest", "")}, {"artifact_store", "preserved"}});
+  if (as_json) std::cout << json{{"status", "REMOVED"}, {"identity", identity}, {"artifact_store", "preserved"}}.dump() << '\n';
+  else std::cout << identity << " removed successfully.\nImmutable artifact remains available for future garbage collection.\n";
+  return 0;
+}
+
 json manifest_summary(const json& manifest) {
   return {
     {"identity", manifest.at("identity")}, {"version", manifest.at("version")},
@@ -455,7 +838,14 @@ int dispatch(const std::vector<std::string>& args, bool as_json, const Roots& ro
     if (args[0] == "info") return info_command(args, as_json);
     if (args[0] == "install") return install_command(args, as_json, roots);
     if (args[0] == "installed") return installed_command(as_json, roots);
-    throw std::runtime_error(args[0] + " is defined but not implemented in this intermediate commit");
+    if (args[0] == "activate") return activate_command(args, as_json, roots);
+    if (args[0] == "deactivate") return deactivate_command(args, as_json, roots);
+    if (args[0] == "remove") return remove_command(args, as_json, roots);
+    throw std::runtime_error("unknown realization command");
+  } catch (const OperationFailure& error) {
+    if (as_json) std::cout << json{{"status", error.status()}, {"error", error.what()}}.dump() << '\n';
+    else std::cerr << "Realization operation " << error.status() << ".\nCause: " << error.what() << '\n';
+    return 1;
   } catch (const std::exception& error) {
     if (as_json) std::cout << json{{"status", "REJECTED"}, {"error", error.what()}}.dump() << '\n';
     else std::cerr << "Realization operation failed.\nCause: " << error.what() << '\n';
@@ -463,7 +853,46 @@ int dispatch(const std::vector<std::string>& args, bool as_json, const Roots& ro
   }
 }
 
-json active_surfaces(const Roots&) { return json::array(); }
-json observed_relations(const Roots&) { return json::array(); }
+json active_surfaces(const Roots& roots) {
+  json surfaces = json::array();
+  for (const auto& active : active_records(roots)) {
+    try {
+      const auto witness = read_json(active.at("witness_path").get<std::string>());
+      if (witness.value("realization_id", "") != active.value("realization_id", "") ||
+          witness.at("readiness").value("status", "") != "READY") continue;
+      for (const auto& surface : witness.at("provided_surfaces")) surfaces.push_back(surface);
+    } catch (const std::exception&) {
+    }
+  }
+  return surfaces;
+}
+
+json observed_relations(const Roots& roots) {
+  json relations = json::array();
+  for (const auto& active : active_records(roots)) {
+    try {
+      const auto witness_path = active.at("witness_path").get<std::string>();
+      const auto witness = read_json(witness_path);
+      if (witness.value("realization_id", "") != active.value("realization_id", "") ||
+          witness.at("readiness").value("status", "") != "READY") continue;
+      for (const auto& consumed : witness.at("consumed_surfaces")) {
+        const auto id = consumed.at("id").get<std::string>();
+        const auto& resolved = active.at("resolved_surfaces");
+        const auto resolution = std::find_if(resolved.begin(), resolved.end(), [&id, &consumed](const auto& surface) {
+          return surface.value("id", "") == id && surface.value("locator", "") == consumed.value("locator", "");
+        });
+        if (resolution == resolved.end() || !valid_sha256(consumed.value("evidence_sha256", ""))) continue;
+        relations.push_back({
+          {"id", active.at("identity").get<std::string>() + "-consumes-" + id},
+          {"source", active.at("identity")}, {"target", resolution->value("owner", "")},
+          {"surface", id}, {"status", "ACTIVE"}, {"epistemic_class", "OBSERVED"},
+          {"evidence_ref", witness_path}, {"observed_at", consumed.at("observed_at")}
+        });
+      }
+    } catch (const std::exception&) {
+    }
+  }
+  return relations;
+}
 
 } // namespace synth::realization
