@@ -1,6 +1,23 @@
 {
-  "schema": "synth.relation",
-  "version": "0.1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synth:schema:relation:0.1.0",
+  "title": "SYNTH observed relation",
+  "description": "Portable representation of a relation factually observed by SYNTH.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "source": { "type": "string", "minLength": 1 },
+    "target": { "type": "string", "minLength": 1 },
+    "surface": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "minLength": 1 },
+    "epistemic_class": {
+      "type": "string",
+      "enum": ["DECLARED", "OBSERVED", "DERIVED"]
+    },
+    "evidence_ref": { "type": "string", "minLength": 1 },
+    "observed_at": { "type": "string", "format": "date-time" }
+  },
   "required": [
     "id",
     "source",

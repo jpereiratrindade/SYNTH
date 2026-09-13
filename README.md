@@ -9,7 +9,8 @@ ecossistema ou frontend é simulado.
 
 ## Construção C++26
 
-Requer um compilador com suporte ao modo C++26, CMake 3.25+ e Linux.
+Requer um compilador com suporte ao modo C++26, CMake 3.25+,
+`nlohmann/json` 3.11+ e Linux.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -45,26 +46,29 @@ cmake --install build --prefix /caminho/de/instalacao
 /caminho/de/instalacao/bin/synth foundation verify
 ```
 
-Os documentos normativos, a licença e os esquemas são instalados em
+Os documentos normativos, a licença e os JSON Schemas Draft 2020-12 são instalados em
 `share/synth`. O binário os resolve relativamente à própria localização e não
 depende do checkout usado na compilação.
 
 ## Estado e configuração
 
 ```text
-$XDG_CONFIG_HOME/synth/   configuração e realização
+$XDG_CONFIG_HOME/synth/   somente configuração declarada pelo usuário; pode não existir
 $XDG_STATE_HOME/synth/    evidência observacional persistente
 $XDG_RUNTIME_DIR/synth/   estado efêmero do processo
 ```
 
-Uma segunda execução pode produzir nova evidência — PID, timestamp, CPU e
-memória mudam legitimamente — sem alterar configuração ou realização.
+`version`, `help`, `status`, `surfaces`, `relations` e `foundation verify` não
+persistem dados. Somente `evidence` cria o estado necessário e grava uma nova
+observação atômica. Na ausência de configuração humana, a evidência registra
+`configuration: null`.
 
 ## Documentação normativa
 
 - `docs/SYNTH-FOUNDATION-001-v0.4.0.md`
 - `docs/SYNTH-PATCH-FOUNDATION-001-v0.1.0.md`
 - `docs/SYNTH-FOUNDATION-CORRECTION-001-v0.1.0.md`
+- `docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md`
 
 ## Licença
 
