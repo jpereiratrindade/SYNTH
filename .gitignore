@@ -39,4 +39,4 @@ yarn-error.log*
 /outputs/
 /work/
 /build/
-/.openai/
+*.tsbuildinfo

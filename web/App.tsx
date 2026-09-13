@@ -1,5 +1,3 @@
-"use client";
-
 import { useMemo, useState } from "react";
 
 type View = "estado" | "superficies" | "evidencia" | "fundacao";
