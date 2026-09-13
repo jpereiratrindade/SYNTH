@@ -1,0 +1,14 @@
+{
+  "schema": "synth.surface",
+  "version": "0.1.0",
+  "required": [
+    "id",
+    "owner",
+    "kind",
+    "locator",
+    "direction",
+    "media_type",
+    "observability",
+    "metadata"
+  ]
+}

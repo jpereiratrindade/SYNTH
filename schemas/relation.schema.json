@@ -1,0 +1,14 @@
+{
+  "schema": "synth.relation",
+  "version": "0.1.0",
+  "required": [
+    "id",
+    "source",
+    "target",
+    "surface",
+    "status",
+    "epistemic_class",
+    "evidence_ref",
+    "observed_at"
+  ]
+}

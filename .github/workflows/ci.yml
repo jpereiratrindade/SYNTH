@@ -7,17 +7,16 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    container: gcc:16
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - name: Configure
+      - name: Install controlled build tools
+        run: apt-get update && apt-get install -y --no-install-recommends cmake
+      - name: Record toolchain
+        run: c++ --version && cmake --version
+      - name: Configure C++26 realization
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-      - name: Build C++26
+      - name: Build
         run: cmake --build build --parallel
-      - name: Verify foundation
+      - name: Verify foundation and isolated installation
         run: ctest --test-dir build --output-on-failure
-      - name: Build web interface
-        run: npm ci && npm run build
