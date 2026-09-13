@@ -47,8 +47,6 @@ struct CommandResult {
 
 struct ManifestRecord {
   json manifest;
-  fs::path manifest_path;
-  fs::path source_root;
 };
 
 std::string timestamp() {
@@ -243,23 +241,53 @@ fs::path source_path(std::string value) {
   return fs::canonical(path);
 }
 
-std::vector<ManifestRecord> manifests_from(const fs::path& root) {
-  std::vector<ManifestRecord> records;
-  for (const auto& entry : fs::directory_iterator(root / "manifests")) {
-    if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
-    auto manifest = read_json(entry.path());
-    validate_manifest(manifest);
-    records.push_back({std::move(manifest), entry.path(), root});
+class ArtifactSource {
+ public:
+  virtual ~ArtifactSource() = default;
+  virtual std::vector<ManifestRecord> manifests() const = 0;
+  virtual fs::path acquire(const ManifestRecord& record) const = 0;
+  virtual std::string locator() const = 0;
+};
+
+class LocalFileSource final : public ArtifactSource {
+ public:
+  explicit LocalFileSource(std::string location) : root_(source_path(std::move(location))) {}
+
+  std::vector<ManifestRecord> manifests() const override {
+    std::vector<ManifestRecord> records;
+    for (const auto& entry : fs::directory_iterator(root_ / "manifests")) {
+      if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
+      auto manifest = read_json(entry.path());
+      validate_manifest(manifest);
+      records.push_back({std::move(manifest)});
+    }
+    std::sort(records.begin(), records.end(), [](const auto& left, const auto& right) {
+      return left.manifest.value("identity", "") < right.manifest.value("identity", "");
+    });
+    return records;
   }
-  std::sort(records.begin(), records.end(), [](const auto& left, const auto& right) {
-    return left.manifest.value("identity", "") < right.manifest.value("identity", "");
-  });
-  return records;
+
+  fs::path acquire(const ManifestRecord& record) const override {
+    const auto candidate = root_ / record.manifest.at("artifact").at("path").get<std::string>();
+    if (!fs::is_regular_file(candidate) || !path_within(root_, candidate)) {
+      throw std::runtime_error("artifact escapes or is absent from local source");
+    }
+    return fs::canonical(candidate);
+  }
+
+  std::string locator() const override { return root_.string(); }
+
+ private:
+  fs::path root_;
+};
+
+std::unique_ptr<ArtifactSource> open_source(std::string location) {
+  return std::make_unique<LocalFileSource>(std::move(location));
 }
 
-ManifestRecord resolve(const fs::path& source, std::string_view identity) {
+ManifestRecord resolve(const ArtifactSource& source, std::string_view identity) {
   std::optional<ManifestRecord> match;
-  for (auto& record : manifests_from(source)) {
+  for (auto& record : source.manifests()) {
     if (record.manifest.value("identity", "") != identity) continue;
     if (match) throw std::runtime_error("source contains multiple manifests for identity: " + std::string(identity));
     match = std::move(record);
@@ -285,14 +313,6 @@ void record_transaction(const Roots& roots, std::string_view operation, std::str
     {"transaction_id", id}, {"operation", operation}, {"identity", identity},
     {"status", status}, {"observed_at", timestamp()}, {"evidence", evidence}
   });
-}
-
-fs::path artifact_path(const ManifestRecord& record) {
-  const auto candidate = record.source_root / record.manifest.at("artifact").at("path").get<std::string>();
-  if (!fs::is_regular_file(candidate) || !path_within(record.source_root, candidate)) {
-    throw std::runtime_error("artifact escapes or is absent from local source");
-  }
-  return fs::canonical(candidate);
 }
 
 void validate_tar(const fs::path& artifact) {
@@ -326,7 +346,7 @@ struct InstallResult {
   bool no_op{};
 };
 
-InstallResult install(const ManifestRecord& record, const Roots& roots) {
+InstallResult install(const ManifestRecord& record, const ArtifactSource& source, const Roots& roots) {
   const auto identity = record.manifest.at("identity").get<std::string>();
   const auto version = record.manifest.at("version").get<std::string>();
   const auto expected_digest = record.manifest.at("artifact").at("sha256").get<std::string>();
@@ -337,7 +357,7 @@ InstallResult install(const ManifestRecord& record, const Roots& roots) {
     throw std::runtime_error("identity is already installed with different content; upgrade is not implemented");
   }
 
-  const auto artifact = artifact_path(record);
+  const auto artifact = source.acquire(record);
   const auto actual_digest = sha256(artifact);
   if (actual_digest != expected_digest) {
     record_transaction(roots, "install", identity, "REJECTED", {{"reason", "SHA-256 mismatch"}, {"expected", expected_digest}, {"observed", actual_digest}});
@@ -369,7 +389,7 @@ InstallResult install(const ManifestRecord& record, const Roots& roots) {
   const json installation{
     {"identity", identity}, {"version", version}, {"digest", expected_digest},
     {"store_path", destination.string()}, {"manifest", record.manifest},
-    {"source", record.source_root.string()}, {"installed_at", timestamp()}, {"status", "INSTALLED"}
+    {"source", source.locator()}, {"installed_at", timestamp()}, {"status", "INSTALLED"}
   };
   write_json_atomic(installation_path, installation);
   record_transaction(roots, "install", identity, "INSTALLED", {{"digest", expected_digest}, {"active_state", "unchanged"}});
@@ -801,7 +821,8 @@ int search_command(const std::vector<std::string>& args, bool as_json) {
   if (args.size() < 2) throw std::runtime_error("usage: synth search <query> --source <source>");
   const auto source_option = option_value(args, "--source");
   if (!source_option) throw std::runtime_error("search requires --source <source>");
-  const auto records = manifests_from(source_path(*source_option));
+  const auto source = open_source(*source_option);
+  const auto records = source->manifests();
   json matches = json::array();
   for (const auto& record : records) {
     const auto identity = record.manifest.value("identity", "");
@@ -821,7 +842,8 @@ int info_command(const std::vector<std::string>& args, bool as_json) {
   if (args.size() < 2) throw std::runtime_error("usage: synth info <identity> --source <source>");
   const auto source_option = option_value(args, "--source");
   if (!source_option) throw std::runtime_error("info requires --source <source>");
-  const auto record = resolve(source_path(*source_option), args[1]);
+  const auto source = open_source(*source_option);
+  const auto record = resolve(*source, args[1]);
   if (as_json) std::cout << manifest_summary(record.manifest).dump() << '\n';
   else print_manifest(record.manifest);
   return 0;
@@ -831,8 +853,9 @@ int install_command(const std::vector<std::string>& args, bool as_json, const Ro
   if (args.size() < 2) throw std::runtime_error("usage: synth install <identity> --source <source>");
   const auto source_option = option_value(args, "--source");
   if (!source_option) throw std::runtime_error("install requires --source <source>");
-  const auto record = resolve(source_path(*source_option), args[1]);
-  const auto result = install(record, roots);
+  const auto source = open_source(*source_option);
+  const auto record = resolve(*source, args[1]);
+  const auto result = install(record, *source, roots);
   if (as_json) {
     std::cout << json{{"status", result.no_op ? "NO_OP" : "INSTALLED"}, {"active_state", "unchanged"}, {"installation", result.installation}}.dump() << '\n';
   } else if (result.no_op) {
