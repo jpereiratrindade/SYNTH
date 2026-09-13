@@ -82,8 +82,9 @@ Não existe conceito obrigatório de plugin ou tipo constitucional web.
 resolve -> acquire -> SHA-256 verify -> stage -> install
 ```
 
-SHA-256 é calculado por OpenSSL. Arquivos `tar` são extraídos por libarchive com
-rejeição de caminhos absolutos, travessia `..`, links simbólicos e hard links.
+SHA-256 é calculado por OpenSSL. Arquivos `tar` são inspecionados e extraídos
+pelo GNU tar, após rejeição de caminhos absolutos, travessia `..`, links
+simbólicos e hard links.
 O store é endereçado pelo digest e não é modificado depois da promoção.
 
 Digest divergente ou manifesto inválido produz `REJECTED`; instalação e estado

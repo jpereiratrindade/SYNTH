@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install controlled build tools
-        run: apt-get update && apt-get install -y --no-install-recommends cmake nlohmann-json3-dev python3-jsonschema
+        run: apt-get update && apt-get install -y --no-install-recommends cmake libssl-dev nlohmann-json3-dev python3-jsonschema tar
       - name: Record toolchain
         run: c++ --version && cmake --version
       - name: Configure C++26 realization

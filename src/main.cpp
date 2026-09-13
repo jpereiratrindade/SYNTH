@@ -18,6 +18,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "realization.hpp"
+
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 using json = nlohmann::json;
@@ -38,6 +40,7 @@ std::string home() { return env_or("HOME", "/tmp"); }
 
 struct Paths {
   fs::path config;
+  fs::path data;
   fs::path state;
   fs::path runtime;
 };
@@ -46,9 +49,14 @@ Paths xdg_paths() {
   const auto uid = static_cast<unsigned long>(::getuid());
   return {
     fs::path(env_or("XDG_CONFIG_HOME", home() + "/.config")) / "synth",
+    fs::path(env_or("XDG_DATA_HOME", home() + "/.local/share")) / "synth",
     fs::path(env_or("XDG_STATE_HOME", home() + "/.local/state")) / "synth",
     fs::path(env_or("XDG_RUNTIME_DIR", "/tmp/synth-runtime-" + std::to_string(uid))) / "synth"
   };
+}
+
+realization::Roots realization_roots(const Paths& paths, const fs::path& resources) {
+  return {paths.data, paths.state, paths.runtime, resources};
 }
 
 fs::path executable_path() {
@@ -104,16 +112,25 @@ json surface_json(const Surface& surface) {
   };
 }
 
-std::vector<Surface> observed_surfaces(const Paths& paths, bool evidence_will_be_persisted = false) {
+std::vector<Surface> observed_surfaces(const Paths& paths, const fs::path& resources, bool evidence_will_be_persisted = false) {
   std::vector<Surface> result{{"synth.cli", "SYNTH", "process-stream", "stdio://synth", "bidirectional", "text/plain", "self-observed", "human and JSON representations"}};
   const auto evidence = paths.state / "evidence/latest.json";
   if (evidence_will_be_persisted || fs::is_regular_file(evidence)) {
     result.push_back({"synth.evidence", "SYNTH", "file", evidence.string(), "outbound", "application/json", "self-observed", "atomic latest evidence document"});
   }
+  for (const auto& surface : realization::active_surfaces(realization_roots(paths, resources))) {
+    result.push_back({
+      surface.value("id", ""), surface.value("owner", ""), surface.value("kind", ""),
+      surface.value("locator", ""), surface.value("direction", ""), surface.value("media_type", ""),
+      surface.value("observability", ""), surface.value("metadata", "")
+    });
+  }
   return result;
 }
 
-json observed_relations() { return json::array(); }
+json observed_relations(const Paths& paths, const fs::path& resources) {
+  return realization::observed_relations(realization_roots(paths, resources));
+}
 
 struct Metrics {
   bool valid{};
@@ -155,10 +172,10 @@ void prepare_evidence_storage(const Paths& paths) {
   ensure_directory(paths.runtime);
 }
 
-json evidence_json(const Paths& paths, const fs::path& data) {
+json evidence_json(const Paths& paths, const fs::path& resources) {
   const auto sample = metrics();
   json surfaces = json::array();
-  for (const auto& surface : observed_surfaces(paths, true)) surfaces.push_back(surface_json(surface));
+  for (const auto& surface : observed_surfaces(paths, resources, true)) surfaces.push_back(surface_json(surface));
 
   json configuration = nullptr;
   if (fs::exists(paths.config)) configuration = paths.config.string();
@@ -175,12 +192,13 @@ json evidence_json(const Paths& paths, const fs::path& data) {
     }},
     {"roots", {
       {"configuration", configuration},
+      {"managed_data", paths.data.string()},
       {"state", paths.state.string()},
       {"runtime", paths.runtime.string()},
-      {"data", data.string()}
+      {"resources", resources.string()}
     }},
     {"observed_surfaces", std::move(surfaces)},
-    {"observed_relations", observed_relations()},
+    {"observed_relations", observed_relations(paths, resources)},
     {"timestamp", iso_timestamp()},
     {"epistemic_class", "OBSERVED"}
   };
@@ -296,10 +314,12 @@ std::vector<Gate> foundation_gates(const Paths& paths, const fs::path& data) {
   const auto license = data / "LICENSE";
   const auto license_text = read_file(license);
   const auto sample = metrics();
-  const auto surfaces = observed_surfaces(paths);
-  const auto relations = observed_relations();
-  const bool xdg = paths.config != paths.state && paths.config != paths.runtime && paths.state != paths.runtime &&
+  const auto surfaces = observed_surfaces(paths, data);
+  const auto relations = observed_relations(paths, data);
+  const bool xdg = paths.config != paths.data && paths.config != paths.state && paths.config != paths.runtime &&
+    paths.data != paths.state && paths.data != paths.runtime && paths.state != paths.runtime &&
     (!fs::exists(paths.config) || fs::is_directory(paths.config)) &&
+    (!fs::exists(paths.data) || fs::is_directory(paths.data)) &&
     (!fs::exists(paths.state) || fs::is_directory(paths.state)) &&
     (!fs::exists(paths.runtime) || fs::is_directory(paths.runtime));
   const bool self_observed = ::getpid() > 0 && sample.uptime_ms >= 0 && !iso_timestamp().empty();
@@ -321,7 +341,7 @@ std::vector<Gate> foundation_gates(const Paths& paths, const fs::path& data) {
     {"FOUNDATION_FILE_PRESENT", fs::is_regular_file(foundation), "OBSERVED", foundation.string()},
     {"GPL_3_ONLY", license_text && license_text->find("GNU GENERAL PUBLIC LICENSE") != std::string::npos && license_text->find("Version 3, 29 June 2007") != std::string::npos, "DERIVED", license.string()},
     {"CPP26_BUILD", __cplusplus >= 202400L, "OBSERVED", "__cplusplus=" + std::to_string(__cplusplus)},
-    {"XDG_SEPARATION", xdg, "DERIVED", configuration_evidence + " | state=" + paths.state.string() + " | runtime=" + paths.runtime.string()},
+    {"XDG_SEPARATION", xdg, "DERIVED", configuration_evidence + " | data=" + paths.data.string() + " | state=" + paths.state.string() + " | runtime=" + paths.runtime.string()},
     {"SELF_OBSERVATION", self_observed, "OBSERVED", "pid=" + std::to_string(::getpid()) + ", uptime_ms=" + std::to_string(sample.uptime_ms)},
     {"RESOURCE_OBSERVATION", resources_observed, "OBSERVED", "rss_kib=" + std::to_string(sample.rss_kib) + ", max_rss_kib=" + std::to_string(sample.max_rss_kib) + ", cpu_seconds=" + std::to_string(sample.cpu_seconds)},
     {"SURFACE_MODEL_GENERIC", surface_schema && surface_instances, "DERIVED", "JSON Schema Draft 2020-12: " + (data / "schemas/surface.schema.json").string()},
@@ -381,8 +401,8 @@ void print_foundation(const std::vector<Gate>& gates, bool as_json) {
   }
 }
 
-void print_surfaces(const Paths& paths, bool as_json) {
-  const auto items = observed_surfaces(paths);
+void print_surfaces(const Paths& paths, const fs::path& resources, bool as_json) {
+  const auto items = observed_surfaces(paths, resources);
   if (as_json) {
     json rendered = json::array();
     for (const auto& item : items) rendered.push_back(surface_json(item));
@@ -397,9 +417,15 @@ void print_surfaces(const Paths& paths, bool as_json) {
   }
 }
 
-void print_relations(bool as_json) {
-  if (as_json) std::cout << observed_relations().dump() << '\n';
-  else std::cout << human_relations();
+void print_relations(const Paths& paths, const fs::path& resources, bool as_json) {
+  const auto relations = observed_relations(paths, resources);
+  if (as_json) std::cout << relations.dump() << '\n';
+  else if (relations.empty()) std::cout << human_relations();
+  else for (const auto& relation : relations) {
+    std::cout << relation.value("source", "") << "\n  consumes -> " << relation.value("surface", "")
+              << "\n  " << relation.value("epistemic_class", "")
+              << "\n  witness: " << relation.value("evidence_ref", "") << "\n";
+  }
 }
 
 void print_help() {
@@ -411,6 +437,13 @@ void print_help() {
             << "  surfaces            List only observed SYNTH surfaces\n"
             << "  relations           List observed relations\n"
             << "  evidence            Observe this process and persist evidence\n";
+  std::cout << "  search               Search a local artifact source\n"
+            << "  info                 Inspect a realizable artifact\n"
+            << "  install              Verify and install without activation\n"
+            << "  installed            List installed artifacts\n"
+            << "  activate             Verify and promote a candidate\n"
+            << "  deactivate           Stop an active realization\n"
+            << "  remove               Remove an inactive installation\n";
 }
 
 } // namespace synth
@@ -430,7 +463,7 @@ int main(int argc, char** argv) {
 
     const bool foundation_command = args[0] == "foundation" && args.size() > 1 && args[1] == "verify";
     const bool known_command = args[0] == "status" || args[0] == "surfaces" || args[0] == "relations" ||
-                               args[0] == "evidence" || foundation_command;
+                               args[0] == "evidence" || foundation_command || realization::handles(args);
     if (!known_command) {
       std::cerr << "Unknown command: " << args[0] << "\nEvidence: run 'synth help' for valid commands.\n";
       return 2;
@@ -438,6 +471,7 @@ int main(int argc, char** argv) {
 
     const auto paths = xdg_paths();
     const auto data = data_root();
+    if (realization::handles(args)) return realization::dispatch(args, as_json, realization_roots(paths, data));
     if (args[0] == "evidence") {
       prepare_evidence_storage(paths);
       const auto evidence = evidence_json(paths, data);
@@ -445,8 +479,8 @@ int main(int argc, char** argv) {
       std::cout << (as_json ? evidence.dump(2) + "\n" : "Evidence observed and persisted\n  class: OBSERVED\n  file: " + (paths.state / "evidence/latest.json").string() + "\n");
       return 0;
     }
-    if (args[0] == "surfaces") { print_surfaces(paths, as_json); return 0; }
-    if (args[0] == "relations") { print_relations(as_json); return 0; }
+    if (args[0] == "surfaces") { print_surfaces(paths, data, as_json); return 0; }
+    if (args[0] == "relations") { print_relations(paths, data, as_json); return 0; }
 
     const auto gates = foundation_gates(paths, data);
     if (args[0] == "status") { print_status(gates, as_json); return all_pass(gates) ? 0 : 1; }
