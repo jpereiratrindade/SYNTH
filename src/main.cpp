@@ -218,8 +218,8 @@ void persist_evidence(const Paths& paths, const json& evidence) {
 
 std::vector<std::string> tree_snapshot(const Paths& paths) {
   std::vector<std::string> snapshot;
-  const std::array<std::pair<std::string_view, fs::path>, 3> roots{{
-    {"config", paths.config}, {"state", paths.state}, {"runtime", paths.runtime}
+  const std::array<std::pair<std::string_view, fs::path>, 4> roots{{
+    {"config", paths.config}, {"data", paths.data}, {"state", paths.state}, {"runtime", paths.runtime}
   }};
   for (const auto& [label, root] : roots) {
     std::error_code error;
@@ -362,7 +362,7 @@ std::vector<Gate> foundation_gates(const Paths& paths, const fs::path& data) {
     {"NO_FAKE_RELATIONS", relations_grounded, "DERIVED", std::to_string(relations.size()) + " relation record(s), each grounded in an existing runtime witness"},
     {"CONTEXTLAB_DOCUMENT_COMPAT", context_compatible, "DERIVED", context_detail},
     {"CLI_HUMAN_READABLE", human_cli, "DERIVED", "human renderers verified; JSON remains opt-in"},
-    {"SECOND_RUN_NO_OP", read_only_no_op, "OBSERVED", "read-only observation changed no configuration, state or runtime entry; conformance repeats and fingerprints commands"}
+    {"SECOND_RUN_NO_OP", read_only_no_op, "OBSERVED", "read-only observation changed no configuration, data, state or runtime entry; conformance repeats and fingerprints commands"}
   };
   const bool verified = std::all_of(gates.begin(), gates.end(), [](const Gate& gate) { return gate.pass; });
   gates.insert(gates.begin() + 3, {"FOUNDATION_VERIFY", verified, "DERIVED", "derived from 12 independently evaluated gates"});
