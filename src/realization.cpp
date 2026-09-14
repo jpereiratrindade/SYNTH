@@ -1234,4 +1234,56 @@ json observed_relations(const Roots& roots) {
   return relations;
 }
 
+json ecosystem_participants(const Roots& roots) {
+  json participants = json::array();
+  const auto active = active_records(roots);
+  for (const auto& installation : installed_records(roots)) {
+    try {
+      const auto identity = installation.at("identity").get<std::string>();
+      const auto active_match = std::find_if(active.begin(), active.end(), [&identity](const auto& record) {
+        return record.value("identity", "") == identity;
+      });
+      json observed = json::array();
+      json realization_id = nullptr;
+      json realization_evidence_ref = nullptr;
+      std::string state = "INSTALLED";
+      if (active_match != active.end()) {
+        const fs::path witness_path = active_match->at("witness_path").get<std::string>();
+        if (sha256(witness_path) == active_match->value("witness_sha256", "")) {
+          const auto witness = read_json(witness_path);
+          if (witness.value("realization_id", "") == active_match->value("realization_id", "") &&
+              witness.at("readiness").value("status", "") == "READY") {
+            for (const auto& surface : witness.at("provided_surfaces")) {
+              validate_observed_surface(surface);
+              observed.push_back(surface);
+            }
+            state = "ACTIVE";
+            realization_id = active_match->at("realization_id");
+            realization_evidence_ref = witness_path.string();
+          }
+        }
+      }
+
+      json declared = json::array();
+      for (auto surface : installation.at("manifest").at("provides").at("surfaces")) {
+        surface["epistemic_class"] = "DECLARED";
+        declared.push_back(std::move(surface));
+      }
+      participants.push_back({
+        {"identity", identity}, {"version", installation.at("version")},
+        {"description", installation.at("manifest").at("description")}, {"state", state},
+        {"epistemic_class", "OBSERVED"},
+        {"registration_evidence_ref", (roots.state / "installations" / (identity + ".json")).string()},
+        {"realization_id", realization_id}, {"realization_evidence_ref", realization_evidence_ref},
+        {"declared_surfaces", std::move(declared)}, {"observed_surfaces", std::move(observed)}
+      });
+    } catch (const std::exception&) {
+    }
+  }
+  std::sort(participants.begin(), participants.end(), [](const auto& left, const auto& right) {
+    return left.value("identity", "") < right.value("identity", "");
+  });
+  return participants;
+}
+
 } // namespace synth::realization

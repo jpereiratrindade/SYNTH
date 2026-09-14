@@ -39,7 +39,10 @@ if "$synth_bin" surfaces | grep -F "synth.web"; then
   exit 1
 fi
 "$synth_bin" relations | grep -Fx "No relations observed."
-"$synth_bin" status --json | grep -F '"ECOSYSTEM_SYNTH":"NOT_YET_APPLICABLE"'
+"$synth_bin" ecosystem --json | grep -F '"identity":"SYNTH"'
+"$synth_bin" ecosystem --json | grep -F '"id":"synth.cli"'
+"$synth_bin" resolve synth.cli --json | grep -F '"epistemic_class":"OBSERVED"'
+"$synth_bin" status --json | grep -F '"ECOSYSTEM_SYNTH":"PROJECTED"'
 test -z "$(find "$test_root" -mindepth 1 -print -quit)"
 
 # Only the evidence command creates persistent/ephemeral state.
@@ -47,6 +50,7 @@ test -z "$(find "$test_root" -mindepth 1 -print -quit)"
 "$synth_bin" evidence --json | grep -F '"rss_kib"'
 "$synth_bin" evidence --json | grep -F '"max_rss_kib"'
 "$synth_bin" evidence --json | grep -F '"configuration": null'
+"$synth_bin" evidence --json | grep -F '"ecosystem": {'
 test ! -e "$XDG_CONFIG_HOME/synth"
 test -f "$XDG_STATE_HOME/synth/evidence/latest.json"
 test -d "$XDG_RUNTIME_DIR/synth"
@@ -61,6 +65,9 @@ evidence_before="$(sha256sum "$XDG_STATE_HOME/synth/evidence/latest.json")"
 "$synth_bin" foundation verify >/dev/null
 "$synth_bin" surfaces >/dev/null
 "$synth_bin" relations >/dev/null
+"$synth_bin" ecosystem >/dev/null
+"$synth_bin" ecosystem --json >/dev/null
+"$synth_bin" resolve synth.cli --json >/dev/null
 read_only_after="$(fingerprint)"
 evidence_after_queries="$(sha256sum "$XDG_STATE_HOME/synth/evidence/latest.json")"
 test "$read_only_before" = "$read_only_after"
@@ -84,7 +91,9 @@ if grep -E '\{"[A-Z0-9_]+", true' "$source_root/src/main.cpp"; then
 fi
 grep -F '"$schema": "https://json-schema.org/draft/2020-12/schema"' "$source_root/schemas/surface.schema.json" >/dev/null
 grep -F '"properties"' "$source_root/schemas/relation.schema.json" >/dev/null
-python3 - "$source_root/schemas/surface.schema.json" "$source_root/schemas/relation.schema.json" <<'PY'
+grep -F '"generation"' "$source_root/schemas/ecosystem-projection.schema.json" >/dev/null
+python3 - "$source_root/schemas/surface.schema.json" "$source_root/schemas/relation.schema.json" \
+  "$source_root/schemas/ecosystem-projection.schema.json" <<'PY'
 import json
 import pathlib
 import sys
@@ -106,7 +115,9 @@ installed_synth="$install_root/bin/synth"
 test -x "$installed_synth"
 test -f "$install_root/share/synth/SYNTH-FOUNDATION-001-v0.4.0.md"
 test -f "$install_root/share/synth/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md"
+test -f "$install_root/share/synth/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md"
 test -f "$install_root/share/synth/schemas/relation.schema.json"
+test -f "$install_root/share/synth/schemas/ecosystem-projection.schema.json"
 if strings "$installed_synth" | grep -F "$source_root"; then
   echo "installed binary contains a source-tree dependency" >&2
   exit 1
@@ -122,6 +133,8 @@ export XDG_RUNTIME_DIR="$test_root/installed-runtime"
   "$installed_synth" version | grep -Fx "SYNTH 0.1.0"
   "$installed_synth" foundation verify | grep -F "CONTEXTLAB_DOCUMENT_COMPAT"
   "$installed_synth" status | grep -F "SYSTEM_SYNTH_READY     PASS"
+  "$installed_synth" ecosystem --json | grep -F '"generation"'
+  "$installed_synth" resolve synth.cli --json | grep -F '"identity":"SYNTH"'
 )
 test ! -e "$XDG_CONFIG_HOME/synth"
 test ! -e "$XDG_DATA_HOME/synth"

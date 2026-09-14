@@ -166,6 +166,8 @@ uma alegação de que o SYNTH observou semanticamente o estado interno do proces
 - `search` e `info` consultam a fonte sem alterar estado.
 - `install` verifica e registra, mas não ativa.
 - `installed` consulta instalações sem alterar estado.
+- `ecosystem` projeta registro e topologia sem alterar estado.
+- `resolve` descobre provedores ativos por superfície sem alterar estado.
 - `activate` nunca substitui silenciosamente uma realização ativa.
 - `deactivate` de identidade inativa é `NO_OP`.
 - `remove` recusa instalação ativa e orienta desativação prévia.

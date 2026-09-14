@@ -149,7 +149,26 @@ before_queries="$(fingerprint "$scenario_root")"
 "$synth_bin" installed | grep -F "No artifacts installed." >/dev/null
 after_queries="$(fingerprint "$scenario_root")"
 test "$before_queries" = "$after_queries"
+"$synth_bin" ecosystem --json >"$test_root/ecosystem-fresh-1.json"
+"$synth_bin" ecosystem --json >"$test_root/ecosystem-fresh-2.json"
+python3 - "$source_root/schemas/ecosystem-projection.schema.json" \
+  "$test_root/ecosystem-fresh-1.json" "$test_root/ecosystem-fresh-2.json" <<'PY'
+import json, pathlib, sys
+from jsonschema.validators import validator_for
+schema = json.loads(pathlib.Path(sys.argv[1]).read_text())
+first = json.loads(pathlib.Path(sys.argv[2]).read_text())
+second = json.loads(pathlib.Path(sys.argv[3]).read_text())
+validator_for(schema)(schema).validate(first)
+assert first["generation"] == second["generation"]
+assert [(item["identity"], item["state"]) for item in first["participants"]] == [("SYNTH", "ACTIVE")]
+assert next(item for item in first["surfaces"] if item["id"] == "synth.cli")["providers"][0]["epistemic_class"] == "OBSERVED"
+PY
+"$synth_bin" resolve synth.cli --json | grep -F '"identity":"SYNTH"' >/dev/null
+"$synth_bin" ecosystem | grep -F "SYNTH ecosystem projection" >/dev/null
 echo "LOCAL_SOURCE_RESOLUTION           PASS"
+echo "ECOSYSTEM_SCHEMA_VALID            PASS"
+echo "ECOSYSTEM_PROJECTION_PURE         PASS"
+echo "CLI_HUMAN_AND_JSON                PASS"
 
 # Installation verifies the digest and changes no active realization.
 "$synth_bin" install synth-web --source "$fixture_source" | grep -F "Installed successfully." >/dev/null
@@ -166,6 +185,23 @@ test ! -e "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
 test ! -e "$XDG_RUNTIME_DIR/synth/active/synth-web"
 echo "IMMUTABLE_INSTALL_STORE           PASS"
 echo "INSTALL_NO_ACTIVE_MUTATION        PASS"
+
+"$synth_bin" ecosystem --json >"$test_root/ecosystem-installed.json"
+installed_generation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' "$test_root/ecosystem-installed.json")"
+python3 - "$test_root/ecosystem-installed.json" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+participant = next(item for item in value["participants"] if item["identity"] == "synth-web")
+assert participant["state"] == "INSTALLED"
+assert participant["observed_surfaces"] == []
+surface = next(item for item in value["surfaces"] if item["id"] == "synth-web.http")
+provider = next(item for item in surface["providers"] if item["identity"] == "synth-web")
+assert provider["state"] == "INSTALLED"
+assert provider["epistemic_class"] == "DECLARED"
+assert provider["locator"] is None
+PY
+"$synth_bin" resolve synth-web.http --json | grep -F '"providers":[]' >/dev/null
+echo "INSTALLED_NOT_ACTIVE_PROJECTED    PASS"
 
 # Installing the same identity, version and digest is a real no-op.
 installation_before="$(sha256sum "$installation")"
@@ -191,6 +227,16 @@ echo "MISSING_REQUIREMENT_BLOCKS        PASS"
 # A fresh public evidence surface permits isolated activation. The candidate
 # must pass readiness and produce a schema-valid witness before promotion.
 "$synth_bin" evidence >/dev/null
+"$synth_bin" ecosystem --json >"$test_root/ecosystem-evidence.json"
+evidence_generation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' "$test_root/ecosystem-evidence.json")"
+test "$installed_generation" != "$evidence_generation"
+python3 - "$XDG_STATE_HOME/synth/evidence/latest.json" <<'PY'
+import json, pathlib, sys
+value = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert value["ecosystem"]["$schema"] == "urn:synth:schema:ecosystem-projection:0.1.0"
+assert any(item["id"] == "synth.evidence" for item in value["ecosystem"]["surfaces"])
+PY
+echo "EVIDENCE_EMBEDS_ECOSYSTEM         PASS"
 "$synth_bin" activate synth-web | grep -F "Activate ... PASS" >/dev/null
 active="$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
 test -f "$active"
@@ -225,6 +271,25 @@ PY
 "$synth_bin" relations --json | grep -F '"assertion_mode":"participant_attestation"' >/dev/null
 "$synth_bin" relations --json | grep -F '"verification":"MATCH"' >/dev/null
 "$synth_bin" relations --json >"$test_root/relations.json"
+"$synth_bin" ecosystem --json >"$test_root/ecosystem-active.json"
+active_generation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' "$test_root/ecosystem-active.json")"
+test "$active_generation" != "$evidence_generation"
+python3 - "$source_root/schemas/ecosystem-projection.schema.json" "$test_root/ecosystem-active.json" <<'PY'
+import json, pathlib, sys
+from jsonschema.validators import validator_for
+schema = json.loads(pathlib.Path(sys.argv[1]).read_text())
+value = json.loads(pathlib.Path(sys.argv[2]).read_text())
+validator_for(schema)(schema).validate(value)
+participant = next(item for item in value["participants"] if item["identity"] == "synth-web")
+assert participant["state"] == "ACTIVE"
+surface = next(item for item in value["surfaces"] if item["id"] == "synth-web.http")
+provider = next(item for item in surface["providers"] if item["identity"] == "synth-web")
+assert provider["state"] == "ACTIVE"
+assert provider["epistemic_class"] == "OBSERVED"
+assert provider["locator"].startswith("http://127.0.0.1:")
+assert len(value["relations"]) == 1
+PY
+"$synth_bin" resolve synth-web.http --json | grep -F '"identity":"synth-web"' >/dev/null
 python3 - "$source_root/schemas/relation.schema.json" "$test_root/relations.json" <<'PY'
 import json, pathlib, sys
 from jsonschema.validators import validator_for
@@ -238,6 +303,7 @@ echo "READINESS_VERIFICATION            PASS"
 echo "RUNTIME_WITNESS                   PASS"
 echo "EVIDENCE_SNAPSHOT_PINNED          PASS"
 echo "OBSERVED_RELATION_GROUNDED        PASS"
+echo "LATE_BOUND_SURFACE_DISCOVERY      PASS"
 
 # The promoted participant runs from the immutable store and serves the public
 # evidence it consumed, without either source checkout.
@@ -264,6 +330,9 @@ pure_before="$(fingerprint "$scenario_root")"
 "$synth_bin" foundation verify >/dev/null
 "$synth_bin" surfaces >/dev/null
 "$synth_bin" relations >/dev/null
+"$synth_bin" ecosystem >/dev/null
+"$synth_bin" ecosystem --json >/dev/null
+"$synth_bin" resolve synth-web.http --json >/dev/null
 "$synth_bin" installed >/dev/null
 "$synth_bin" search synth-web --source "$fixture_source" >/dev/null
 "$synth_bin" info synth-web --source "$fixture_source" >/dev/null
@@ -277,6 +346,12 @@ expect_failure "$test_root/remove-active.log" "$synth_bin" remove synth-web
 grep -F "synth deactivate synth-web" "$test_root/remove-active.log" >/dev/null
 test -f "$active"
 "$synth_bin" deactivate synth-web | grep -F "deactivated successfully" >/dev/null
+"$synth_bin" ecosystem --json >"$test_root/ecosystem-deactivated.json"
+deactivated_generation="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["generation"])' "$test_root/ecosystem-deactivated.json")"
+test "$deactivated_generation" = "$evidence_generation"
+"$synth_bin" resolve synth-web.http --json | grep -F '"providers":[]' >/dev/null
+echo "CONTENT_DERIVED_GENERATION        PASS"
+echo "DEACTIVATION_UNRESOLVES_SURFACE   PASS"
 "$synth_bin" relations | grep -Fx "No relations observed." >/dev/null
 "$synth_bin" deactivate synth-web | grep -F "No changes required." >/dev/null
 "$synth_bin" remove synth-web | grep -F "removed successfully" >/dev/null

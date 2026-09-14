@@ -6,7 +6,10 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -17,6 +20,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <openssl/evp.h>
 
 #include "realization.hpp"
 
@@ -132,6 +136,93 @@ json observed_relations(const Paths& paths, const fs::path& resources) {
   return realization::observed_relations(realization_roots(paths, resources));
 }
 
+std::string sha256_text(std::string_view value) {
+  using Context = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
+  Context context(EVP_MD_CTX_new(), EVP_MD_CTX_free);
+  if (!context || EVP_DigestInit_ex(context.get(), EVP_sha256(), nullptr) != 1 ||
+      EVP_DigestUpdate(context.get(), value.data(), value.size()) != 1) {
+    throw std::runtime_error("OpenSSL could not hash ecosystem projection");
+  }
+  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+  unsigned int size = 0;
+  if (EVP_DigestFinal_ex(context.get(), digest.data(), &size) != 1) {
+    throw std::runtime_error("OpenSSL could not finalize ecosystem generation");
+  }
+  std::ostringstream rendered;
+  rendered << std::hex << std::setfill('0');
+  for (unsigned int index = 0; index < size; ++index) {
+    rendered << std::setw(2) << static_cast<unsigned int>(digest[index]);
+  }
+  return rendered.str();
+}
+
+json ecosystem_projection(const Paths& paths, const fs::path& resources,
+                          const bool evidence_will_be_persisted = false) {
+  json core_surfaces = json::array();
+  const auto evidence_path = paths.state / "evidence/latest.json";
+  for (const auto& surface : observed_surfaces(paths, resources, evidence_will_be_persisted)) {
+    if (surface.owner == identity) core_surfaces.push_back(surface_json(surface));
+  }
+
+  json participants = realization::ecosystem_participants(realization_roots(paths, resources));
+  const json core_participant{
+    {"identity", identity}, {"version", version}, {"description", "SYNTH factual core"},
+    {"state", "ACTIVE"}, {"epistemic_class", "OBSERVED"},
+    {"registration_evidence_ref", (resources / "SYNTH-FOUNDATION-001-v0.4.0.md").string()},
+    {"realization_id", nullptr},
+    {"realization_evidence_ref", (evidence_will_be_persisted || fs::is_regular_file(evidence_path)) ? json(evidence_path.string()) : json(nullptr)},
+    {"declared_surfaces", json::array()}, {"observed_surfaces", std::move(core_surfaces)}
+  };
+  participants.insert(participants.begin(), core_participant);
+
+  std::map<std::string, json> providers_by_surface;
+  for (const auto& participant : participants) {
+    std::set<std::string> observed_ids;
+    for (const auto& surface : participant.at("observed_surfaces")) {
+      const auto id = surface.at("id").get<std::string>();
+      observed_ids.insert(id);
+      auto evidence_ref = participant.at("realization_evidence_ref");
+      if (evidence_ref.is_null()) evidence_ref = participant.at("registration_evidence_ref");
+      providers_by_surface[id].push_back({
+        {"identity", participant.at("identity")}, {"state", participant.at("state")},
+        {"epistemic_class", "OBSERVED"}, {"kind", surface.at("kind")},
+        {"media_type", surface.at("media_type")}, {"locator", surface.at("locator")},
+        {"evidence_ref", std::move(evidence_ref)}
+      });
+    }
+    for (const auto& surface : participant.at("declared_surfaces")) {
+      const auto id = surface.at("id").get<std::string>();
+      if (observed_ids.contains(id)) continue;
+      providers_by_surface[id].push_back({
+        {"identity", participant.at("identity")}, {"state", participant.at("state")},
+        {"epistemic_class", "DECLARED"},
+        {"kind", surface.contains("kind") ? surface.at("kind") : json(nullptr)},
+        {"media_type", surface.contains("media_type") ? surface.at("media_type") : json(nullptr)},
+        {"locator", nullptr}, {"evidence_ref", participant.at("registration_evidence_ref")}
+      });
+    }
+  }
+
+  json surfaces = json::array();
+  for (auto& [id, providers] : providers_by_surface) {
+    std::sort(providers.begin(), providers.end(), [](const auto& left, const auto& right) {
+      return left.value("identity", "") < right.value("identity", "");
+    });
+    surfaces.push_back({{"id", id}, {"providers", std::move(providers)}});
+  }
+  auto relations = observed_relations(paths, resources);
+  std::sort(relations.begin(), relations.end(), [](const auto& left, const auto& right) {
+    return left.value("id", "") < right.value("id", "");
+  });
+  const json topology{{"participants", participants}, {"surfaces", surfaces}, {"relations", relations}};
+  return {
+    {"$schema", "urn:synth:schema:ecosystem-projection:0.1.0"}, {"schema_version", "0.1.0"},
+    {"generation", sha256_text(topology.dump())}, {"observed_at", iso_timestamp()},
+    {"epistemic_class", "OBSERVED"}, {"participants", std::move(participants)},
+    {"surfaces", std::move(surfaces)}, {"relations", std::move(relations)}
+  };
+}
+
 struct Metrics {
   bool valid{};
   long rss_kib{};
@@ -199,6 +290,7 @@ json evidence_json(const Paths& paths, const fs::path& resources) {
     }},
     {"observed_surfaces", std::move(surfaces)},
     {"observed_relations", observed_relations(paths, resources)},
+    {"ecosystem", ecosystem_projection(paths, resources, true)},
     {"timestamp", iso_timestamp()},
     {"epistemic_class", "OBSERVED"}
   };
@@ -391,7 +483,7 @@ void print_status(const std::vector<Gate>& gates, bool as_json) {
     std::cout << json{
       {"FOUNDATION_READY", ready ? "PASS" : "FAIL"},
       {"SYSTEM_SYNTH_READY", ready ? "PASS" : "FAIL"},
-      {"ECOSYSTEM_SYNTH", "NOT_YET_APPLICABLE"},
+      {"ECOSYSTEM_SYNTH", "PROJECTED"},
       {"scope", "LOCAL_RUNTIME"},
       {"ci", "EXTERNAL_EVIDENCE"}
     }.dump() << '\n';
@@ -400,7 +492,7 @@ void print_status(const std::vector<Gate>& gates, bool as_json) {
   std::cout << "SYNTH — present local state\n\n"
             << "  FOUNDATION_READY       " << (ready ? "PASS" : "FAIL") << "\n"
             << "  SYSTEM_SYNTH_READY     " << (ready ? "PASS" : "FAIL") << "\n"
-            << "  ECOSYSTEM_SYNTH        NOT_YET_APPLICABLE\n\n"
+            << "  ECOSYSTEM_SYNTH        PROJECTED\n\n"
             << "Local runtime evidence only; repository acceptance also requires CI PASS.\n";
 }
 
@@ -448,6 +540,56 @@ void print_relations(const Paths& paths, const fs::path& resources, bool as_json
   }
 }
 
+void print_ecosystem(const Paths& paths, const fs::path& resources, const bool as_json) {
+  const auto projection = ecosystem_projection(paths, resources);
+  if (as_json) {
+    std::cout << projection.dump() << '\n';
+    return;
+  }
+  std::cout << "SYNTH ecosystem projection\n\n"
+            << "  generation    " << projection.at("generation").get<std::string>() << "\n"
+            << "  participants  " << projection.at("participants").size() << "\n"
+            << "  surfaces      " << projection.at("surfaces").size() << "\n"
+            << "  relations     " << projection.at("relations").size() << "\n\n";
+  for (const auto& participant : projection.at("participants")) {
+    std::cout << "  " << participant.at("identity").get<std::string>()
+              << "  [" << participant.at("state").get<std::string>() << "]\n";
+  }
+}
+
+void print_resolution(const std::vector<std::string>& args, const Paths& paths,
+                      const fs::path& resources, const bool as_json) {
+  if (args.size() != 2) throw std::runtime_error("usage: synth resolve <surface>");
+  const auto projection = ecosystem_projection(paths, resources);
+  json providers = json::array();
+  const auto& surfaces = projection.at("surfaces");
+  const auto match = std::find_if(surfaces.begin(), surfaces.end(), [&args](const auto& surface) {
+    return surface.value("id", "") == args[1];
+  });
+  if (match != surfaces.end()) {
+    for (const auto& provider : match->at("providers")) {
+      if (provider.value("state", "") == "ACTIVE" && provider.value("epistemic_class", "") == "OBSERVED") {
+        providers.push_back(provider);
+      }
+    }
+  }
+  const json result{
+    {"surface", args[1]}, {"generation", projection.at("generation")},
+    {"observed_at", projection.at("observed_at")}, {"providers", providers}
+  };
+  if (as_json) {
+    std::cout << result.dump() << '\n';
+  } else if (providers.empty()) {
+    std::cout << "No active providers observed for " << args[1] << ".\n";
+  } else {
+    std::cout << "Active providers for " << args[1] << "\n\n";
+    for (const auto& provider : providers) {
+      std::cout << "  " << provider.at("identity").get<std::string>()
+                << "\n    " << provider.at("locator").get<std::string>() << "\n";
+    }
+  }
+}
+
 void print_help() {
   std::cout << "SYNTH — always ready, always incomplete\n\n"
             << "Usage: synth <command> [--json]\n\n"
@@ -456,6 +598,8 @@ void print_help() {
             << "  foundation verify   Observe and derive foundational gates\n"
             << "  surfaces            List only observed SYNTH surfaces\n"
             << "  relations           List observed relations\n"
+            << "  ecosystem           Project registered and active ecosystem state\n"
+            << "  resolve              Discover active providers by surface\n"
             << "  evidence            Observe this process and persist evidence\n";
   std::cout << "  search               Search a local artifact source\n"
             << "  info                 Inspect a realizable artifact\n"
@@ -483,6 +627,7 @@ int main(int argc, char** argv) {
 
     const bool foundation_command = args[0] == "foundation" && args.size() > 1 && args[1] == "verify";
     const bool known_command = args[0] == "status" || args[0] == "surfaces" || args[0] == "relations" ||
+                               args[0] == "ecosystem" || args[0] == "resolve" ||
                                args[0] == "evidence" || foundation_command || realization::handles(args);
     if (!known_command) {
       std::cerr << "Unknown command: " << args[0] << "\nEvidence: run 'synth help' for valid commands.\n";
@@ -502,6 +647,12 @@ int main(int argc, char** argv) {
     }
     if (args[0] == "surfaces") { print_surfaces(paths, data, as_json); return 0; }
     if (args[0] == "relations") { print_relations(paths, data, as_json); return 0; }
+    if (args[0] == "ecosystem") {
+      if (args.size() != 1) throw std::runtime_error("usage: synth ecosystem");
+      print_ecosystem(paths, data, as_json);
+      return 0;
+    }
+    if (args[0] == "resolve") { print_resolution(args, paths, data, as_json); return 0; }
 
     const auto gates = foundation_gates(paths, data);
     if (args[0] == "status") { print_status(gates, as_json); return all_pass(gates) ? 0 : 1; }
