@@ -1,12 +1,12 @@
 # SYNTH-ECOSYSTEM-PROJECTION-001 — Namespace factual do ecossistema
-## v0.1.0 — design-candidate
+## v0.1.0 — implemented
 
 ```context-metadata+json
 {
   "document": {
     "id": "SYNTH-ECOSYSTEM-PROJECTION-001",
     "version": "0.1.0",
-    "status": "design-candidate",
+    "status": "implemented",
     "title": "Projeção factual e descoberta tardia do ecossistema SYNTH",
     "project_name": "SYNTH",
     "repository": "jpereiratrindade/SYNTH",
@@ -146,8 +146,9 @@ EVIDENCE_EMBEDS_ECOSYSTEM          PASS
 DEACTIVATION_UNRESOLVES_SURFACE    PASS
 CLI_HUMAN_AND_JSON                 PASS
 CTEST                              PASS
-CI                                 PENDING
+CI                                 PASS
 ```
 
-O documento permanece `design-candidate` até a CI da branch confirmar esses
-critérios no toolchain controlado.
+O status `implemented` foi confirmado no commit funcional `22ee0ed` pela
+[CI foundation 34795526429](https://github.com/jpereiratrindade/SYNTH/actions/runs/34795526429),
+com todos os critérios executados no toolchain controlado.
