@@ -1,12 +1,12 @@
 # SYNTH-LIVE-ECOSYSTEM-001 — Projeção viva e interface humana semântica
-## v0.1.0 — design-candidate
+## v0.1.0 — implemented
 
 ```context-metadata+json
 {
   "document": {
     "id": "SYNTH-LIVE-ECOSYSTEM-001",
     "version": "0.1.0",
-    "status": "design-candidate",
+    "status": "implemented",
     "title": "Stream factual do ecossistema e contrato de interface humana",
     "project_name": "SYNTH",
     "repository": "jpereiratrindade/SYNTH",
@@ -129,8 +129,10 @@ SEMANTIC_HUMAN_CONTRACT            PASS
 MULTIPLE_PROVIDER_DISCOVERY        PASS
 INSTALLED_ARTIFACT_INTEGRATION     PASS
 CTEST                              PASS
-CI                                 PENDING
+CI                                 PASS
 ```
 
-O documento permanece `design-candidate` até a integração do artefato externo,
-a validação end-to-end e a CI da branch confirmarem todos os critérios.
+O status `implemented` foi confirmado no commit funcional `2d6b85f` pelas CIs
+[34826406855](https://github.com/jpereiratrindade/SYNTH/actions/runs/34826406855)
+e [34826429172](https://github.com/jpereiratrindade/SYNTH/actions/runs/34826429172),
+incluindo a integração isolada do artefato SYNTH-WEB `e1bfd5d`.
