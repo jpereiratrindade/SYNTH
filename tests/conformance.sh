@@ -164,6 +164,8 @@ test -f "$install_root/share/synth/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md"
 test -f "$install_root/share/synth/SYNTH-LIVE-ECOSYSTEM-001-v0.1.0.md"
 test -f "$install_root/share/synth/schemas/relation.schema.json"
 test -f "$install_root/share/synth/schemas/ecosystem-projection.schema.json"
+test ! -e "$install_root/include/jsoncons"
+test ! -e "$install_root/share/cmake/jsoncons"
 if strings "$installed_synth" | grep -F "$source_root"; then
   echo "installed binary contains a source-tree dependency" >&2
   exit 1

@@ -93,6 +93,26 @@ observed_digest="$(sha256sum "$artifact" | cut -d' ' -f1)"
 test "$expected_digest" = "$observed_digest"
 echo "ARTIFACT_INTEGRITY                 PASS"
 
+# The runtime executes the published schemas themselves. Tightening a copied
+# schema changes acceptance without any corresponding C++ change.
+runtime_schema_root="$test_root/runtime-schema-data"
+mkdir -p "$runtime_schema_root"
+cp -a "$source_root/schemas" "$runtime_schema_root/schemas"
+python3 - "$runtime_schema_root/schemas/artifact-manifest.schema.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["properties"]["description"]["maxLength"] = 1
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+use_scenario manifest-schema-evolution
+export SYNTH_DATA_DIR="$runtime_schema_root"
+expect_failure "$test_root/manifest-schema-evolution.log" "$synth_bin" install synth-web --source "$fixture_source"
+grep -F "/description" "$test_root/manifest-schema-evolution.log" >/dev/null
+test ! -e "$XDG_STATE_HOME/synth/installations/synth-web.json"
+unset SYNTH_DATA_DIR
+echo "MANIFEST_SCHEMA_SINGLE_SOURCE     PASS"
+
 # Invalid manifests and digests are rejected without installation or impact on
 # core readiness.
 invalid_source="$test_root/invalid-source"
@@ -120,7 +140,7 @@ path.write_text(json.dumps(value), encoding="utf-8")
 PY
 use_scenario strict-manifest
 expect_failure "$test_root/strict-manifest.log" "$synth_bin" install synth-web --source "$strict_manifest_source"
-grep -F "unexpected field" "$test_root/strict-manifest.log" >/dev/null
+grep -F "unexpected" "$test_root/strict-manifest.log" >/dev/null
 test ! -e "$XDG_STATE_HOME/synth/installations/synth-web.json"
 echo "MANIFEST_SCHEMA_RUNTIME_ENFORCED  PASS"
 
@@ -136,8 +156,27 @@ path.write_text(json.dumps(value), encoding="utf-8")
 PY
 use_scenario invalid-human-surface
 expect_failure "$test_root/invalid-human-surface.log" "$synth_bin" install synth-web --source "$invalid_human_surface_source"
-grep -F "interface.human.web.v1 requires" "$test_root/invalid-human-surface.log" >/dev/null
+grep -F "/provides/surfaces/1" "$test_root/invalid-human-surface.log" >/dev/null
 echo "SEMANTIC_HUMAN_CONTRACT          PASS"
+
+# Witness constraints are likewise interpreted by the runtime validator.
+cp "$source_root/schemas/artifact-manifest.schema.json" "$runtime_schema_root/schemas/artifact-manifest.schema.json"
+python3 - "$runtime_schema_root/schemas/realization-witness.schema.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["properties"]["readiness"]["properties"]["mechanism"]["const"] = "schema-evolution-required"
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+use_scenario witness-schema-evolution
+export SYNTH_DATA_DIR="$runtime_schema_root"
+"$synth_bin" install synth-web --source "$fixture_source" >/dev/null
+"$synth_bin" evidence >/dev/null
+expect_failure "$test_root/witness-schema-evolution.log" "$synth_bin" activate synth-web
+grep -F "/readiness/mechanism" "$test_root/witness-schema-evolution.log" >/dev/null
+test ! -e "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
+unset SYNTH_DATA_DIR
+echo "WITNESS_SCHEMA_SINGLE_SOURCE      PASS"
 
 bad_digest_source="$test_root/bad-digest-source"
 cp -a "$fixture_source" "$bad_digest_source"

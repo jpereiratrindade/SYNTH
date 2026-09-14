@@ -10,8 +10,10 @@ ecossistema ou frontend é simulado.
 ## Construção C++26
 
 Requer um compilador com suporte ao modo C++26, CMake 3.25+,
-`nlohmann/json` 3.11+, OpenSSL 3.0+, GNU tar e Linux. A suíte de conformidade
-usa Python 3 com `jsonschema` apenas para validar os schemas publicados.
+`nlohmann/json` 3.11+, OpenSSL 3.0+, GNU tar e Linux. O CMake usa `jsoncons`
+1.9+ instalado ou adquire a versão 1.9.0 fixada por hash. O runtime executa os
+schemas Draft 2020-12 publicados; a suíte usa Python 3 com `jsonschema` como
+validador independente.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -67,6 +69,11 @@ digests das superfícies de arquivo requeridas, inicia uma candidata isolada,
 aplica um timeout real à readiness e valida integralmente seu witness antes da
 promoção. Relações só aparecem como `OBSERVED` quando a atestação do participante
 corresponde ao digest resolvido pelo SYNTH.
+
+Manifestos e witnesses são validados no runtime diretamente contra os JSON
+Schemas instalados. O código C++ acrescenta apenas invariantes operacionais que
+o schema não expressa, como confinamento de caminhos, unicidade semântica de IDs
+e correspondência entre witness, processo, manifesto e evidência resolvida.
 
 As operações mutantes são serializadas por um lock global nesta versão;
 consultas permanecem paralelas e sem persistência.

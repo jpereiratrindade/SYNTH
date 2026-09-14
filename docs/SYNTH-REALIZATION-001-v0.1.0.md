@@ -210,8 +210,9 @@ Nenhuma dependência introduz um framework de aplicação no núcleo.
 | OpenSSL `libcrypto` | 3.0 | SHA-256 do artefato, witness e evidência resolvida | Apache-2.0 |
 | GNU tar | 1.34 | inspeção e extração do pacote `tar` validado | GPL-3.0-or-later |
 | nlohmann/json | 3.11 | JSON no núcleo; já presente na Fundação | MIT |
+| jsoncons | 1.9 | validação runtime dos contratos JSON Schema Draft 2020-12 | BSL-1.0 |
 | Python | 3.11 | execução dos testes de integração | PSF-2.0 |
-| jsonschema | 4.10 | validação independente dos JSON Schemas nos testes; já presente na Fundação | MIT |
+| jsonschema | 4.10 | validação independente dos JSON Schemas nos testes | MIT |
 
 O participante independente usa Python 3.11+ e somente sua biblioteca padrão
 para o runtime HTTP. CMake 3.25+ (BSD-3-Clause) permanece a ferramenta de build

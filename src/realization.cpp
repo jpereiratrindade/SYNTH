@@ -25,20 +25,11 @@
 #include <unistd.h>
 
 #include <openssl/evp.h>
+#include <jsoncons/json.hpp>
+#include <jsoncons_ext/jsonschema/jsonschema.hpp>
 
 namespace synth::realization {
 namespace {
-
-constexpr std::string_view manifest_schema = "urn:synth:schema:artifact-manifest:0.1.0";
-constexpr std::string_view witness_schema = "urn:synth:schema:realization-witness:0.1.0";
-constexpr std::string_view human_web_surface = "interface.human.web.v1";
-
-void validate_semantic_surface_contract(const json& surface) {
-  if (surface.value("id", "") != human_web_surface) return;
-  if (surface.value("kind", "") != "http" || surface.value("media_type", "") != "text/html") {
-    throw std::runtime_error("interface.human.web.v1 requires kind=http and media_type=text/html");
-  }
-}
 
 class OperationFailure : public std::runtime_error {
  public:
@@ -98,6 +89,41 @@ json read_json(const fs::path& path) {
     throw std::runtime_error("invalid JSON in " + path.string() + ": " + error.what());
   }
 }
+
+class JsonSchemaValidator {
+ public:
+  explicit JsonSchemaValidator(const fs::path& schema_path)
+      : schema_(compile(schema_path)), schema_path_(schema_path) {}
+
+  void validate(const json& instance, std::string_view document_name) const {
+    std::optional<std::string> validation_error;
+    const auto reporter = [&validation_error](const jsoncons::jsonschema::validation_message& error) {
+      validation_error = error.instance_location().string() + ": " + error.message();
+      return jsoncons::jsonschema::walk_state::abort;
+    };
+    schema_.validate(jsoncons::json::parse(instance.dump()), reporter);
+    if (validation_error) {
+      throw std::runtime_error(std::string(document_name) + " does not conform to " +
+                               schema_path_.string() + "\n  " + *validation_error);
+    }
+  }
+
+ private:
+  static jsoncons::jsonschema::json_schema<jsoncons::json> compile(const fs::path& path) {
+    std::ifstream input(path);
+    if (!input) throw std::runtime_error("cannot read JSON Schema: " + path.string());
+    try {
+      auto schema = jsoncons::json::parse(input);
+      const auto options = jsoncons::jsonschema::evaluation_options{}.require_format_validation(true);
+      return jsoncons::jsonschema::make_json_schema(std::move(schema), options);
+    } catch (const std::exception& error) {
+      throw std::runtime_error("cannot compile JSON Schema " + path.string() + ": " + error.what());
+    }
+  }
+
+  jsoncons::jsonschema::json_schema<jsoncons::json> schema_;
+  fs::path schema_path_;
+};
 
 void write_json_atomic(const fs::path& path, const json& value) {
   ensure_directory(path.parent_path());
@@ -207,134 +233,28 @@ bool valid_sha256(std::string_view value) {
   });
 }
 
-bool non_empty_string(const json& value) {
-  return value.is_string() && !value.get_ref<const std::string&>().empty();
-}
-
-bool string_value(const json& value) {
-  return value.is_string();
-}
-
-void require_object_shape(const json& value, const std::set<std::string>& required,
-                          const std::set<std::string>& optional = {}) {
-  if (!value.is_object()) throw std::runtime_error("expected a JSON object");
-  for (const auto& field : required) {
-    if (!value.contains(field)) throw std::runtime_error("required field is absent: " + field);
-  }
-  for (const auto& [field, ignored] : value.items()) {
-    (void)ignored;
-    if (!required.contains(field) && !optional.contains(field)) {
-      throw std::runtime_error("unexpected field: " + field);
-    }
-  }
-}
-
-void require_string_array(const json& value, std::string_view field) {
-  if (!value.is_array() || !std::all_of(value.begin(), value.end(), string_value)) {
-    throw std::runtime_error(std::string(field) + " must be an array of strings");
-  }
-}
-
-bool valid_observed_at(std::string_view value) {
-  if (value.size() != 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
-      value[13] != ':' || value[16] != ':' || value[19] != 'Z') return false;
-  for (const auto index : {0U, 1U, 2U, 3U, 5U, 6U, 8U, 9U, 11U, 12U, 14U, 15U, 17U, 18U}) {
-    if (value[index] < '0' || value[index] > '9') return false;
-  }
-  const auto number = [&value](const std::size_t offset, const std::size_t size) {
-    return std::stoi(std::string(value.substr(offset, size)));
-  };
-  const auto month = number(5, 2);
-  const auto day = number(8, 2);
-  const auto hour = number(11, 2);
-  const auto minute = number(14, 2);
-  const auto second = number(17, 2);
-  const auto year = number(0, 4);
-  if (year < 1 || month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
-  std::array<int, 12> days{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-  if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) days[1] = 29;
-  return day >= 1 && day <= days[static_cast<std::size_t>(month - 1)];
-}
-
-void validate_surface_declaration(const json& surface) {
-  require_object_shape(surface, {"id"}, {"kind", "media_type"});
-  if (!non_empty_string(surface.at("id"))) throw std::runtime_error("surface declaration requires a non-empty id");
-  for (const auto* field : {"kind", "media_type"}) {
-    if (surface.contains(field) && !non_empty_string(surface.at(field))) {
-      throw std::runtime_error(std::string("surface declaration has invalid ") + field);
-    }
-  }
-  validate_semantic_surface_contract(surface);
-}
-
-void validate_manifest(const json& manifest) {
+void validate_manifest(const json& manifest, const JsonSchemaValidator& schema) {
   try {
-    require_object_shape(manifest, {
-      "$schema", "schema_version", "identity", "version", "description", "artifact", "provenance",
-      "provides", "requires", "realization", "readiness", "resources"
-    });
-    if (!manifest.is_object() || manifest.value("$schema", "") != manifest_schema ||
-        manifest.value("schema_version", "") != "0.1.0" || !valid_identity(manifest.value("identity", "")) ||
-        manifest.value("version", "").empty() || manifest.value("description", "").empty()) {
-      throw std::runtime_error("manifest identity, version or schema is invalid");
-    }
+    schema.validate(manifest, "artifact manifest");
     const auto& artifact = manifest.at("artifact");
-    require_object_shape(artifact, {"path", "media_type", "sha256"});
-    if (artifact.value("media_type", "") != "application/x-tar" ||
-        !valid_relative_path(artifact.value("path", "")) || !valid_sha256(artifact.value("sha256", ""))) {
-      throw std::runtime_error("artifact path, media type or SHA-256 is invalid");
-    }
-    const auto& provenance = manifest.at("provenance");
-    require_object_shape(provenance, {"source", "revision", "license"});
-    if (!non_empty_string(provenance.at("source")) || !non_empty_string(provenance.at("revision")) ||
-        !non_empty_string(provenance.at("license"))) {
-      throw std::runtime_error("artifact provenance is invalid");
-    }
+    if (!valid_relative_path(artifact.at("path").get<std::string>()))
+      throw std::runtime_error("artifact path is not a safe relative path");
     std::set<std::string> surface_ids;
     for (const auto* set_name : {"provides", "requires"}) {
       const auto& surface_set = manifest.at(set_name);
-      require_object_shape(surface_set, {"surfaces"});
-      if (!surface_set.at("surfaces").is_array()) throw std::runtime_error("surface set must be an array");
       surface_ids.clear();
       for (const auto& surface : surface_set.at("surfaces")) {
-        validate_surface_declaration(surface);
         if (!surface_ids.insert(surface.at("id").get<std::string>()).second) {
           throw std::runtime_error(std::string(set_name) + " contains a duplicate surface id");
         }
       }
     }
     const auto& realization = manifest.at("realization");
-    require_object_shape(realization, {"entrypoint", "arguments", "environment_allowed"});
-    if (!valid_relative_path(realization.value("entrypoint", "")) || !realization.at("arguments").is_array() ||
-        !realization.at("environment_allowed").is_array()) throw std::runtime_error("realization declaration is invalid");
-    const std::set<std::string> supported_environment{
-      "SYNTH_REALIZATION_ID", "SYNTH_WITNESS_PATH", "SYNTH_RESOLVED_SURFACES_PATH",
-      "SYNTH_ECOSYSTEM_STREAM"
-    };
-    require_string_array(realization.at("arguments"), "realization.arguments");
-    std::set<std::string> requested_environment;
-    for (const auto& name : realization.at("environment_allowed")) {
-      if (!name.is_string() || !supported_environment.contains(name.get<std::string>())) {
-        throw std::runtime_error("realization requests an unsupported environment variable");
-      }
-      if (!requested_environment.insert(name.get<std::string>()).second) {
-        throw std::runtime_error("realization requests a duplicate environment variable");
-      }
-    }
+    if (!valid_relative_path(realization.at("entrypoint").get<std::string>()))
+      throw std::runtime_error("realization entrypoint is not a safe relative path");
     const auto& readiness = manifest.at("readiness");
-    require_object_shape(readiness, {"type", "entrypoint", "arguments", "timeout_ms"});
-    if (readiness.value("type", "") != "command" || !valid_relative_path(readiness.value("entrypoint", "")) ||
-        !readiness.at("arguments").is_array() || !readiness.at("timeout_ms").is_number_integer() ||
-        readiness.at("timeout_ms").get<int>() < 100 || readiness.at("timeout_ms").get<int>() > 60000) {
-      throw std::runtime_error("readiness declaration is invalid");
-    }
-    require_string_array(readiness.at("arguments"), "readiness.arguments");
-    const auto& resources = manifest.at("resources");
-    require_object_shape(resources, {}, {"activation_rss_mib_max"});
-    if (resources.contains("activation_rss_mib_max") &&
-        (!resources.at("activation_rss_mib_max").is_number_integer() || resources.at("activation_rss_mib_max").get<long>() < 1)) {
-      throw std::runtime_error("activation RSS admission threshold is invalid");
-    }
+    if (!valid_relative_path(readiness.at("entrypoint").get<std::string>()))
+      throw std::runtime_error("readiness entrypoint is not a safe relative path");
   } catch (const json::exception& error) {
     throw std::runtime_error("manifest does not conform to the required model: " + std::string(error.what()));
   }
@@ -358,7 +278,9 @@ class ArtifactSource {
 
 class LocalFileSource final : public ArtifactSource {
  public:
-  explicit LocalFileSource(std::string location) : root_(source_path(std::move(location))) {}
+  LocalFileSource(std::string location, const fs::path& resources)
+      : root_(source_path(std::move(location))),
+        manifest_schema_(resources / "schemas/artifact-manifest.schema.json") {}
 
   std::vector<ManifestRecord> manifests() const override {
     std::vector<ManifestRecord> records;
@@ -366,9 +288,9 @@ class LocalFileSource final : public ArtifactSource {
       if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
       auto manifest = read_json(entry.path());
       try {
-        validate_manifest(manifest);
+        validate_manifest(manifest, manifest_schema_);
       } catch (const std::exception& error) {
-        throw std::runtime_error("manifest does not conform to the required model: " + std::string(error.what()));
+        throw std::runtime_error("invalid manifest " + entry.path().string() + ": " + error.what());
       }
       records.push_back({std::move(manifest)});
     }
@@ -390,10 +312,11 @@ class LocalFileSource final : public ArtifactSource {
 
  private:
   fs::path root_;
+  JsonSchemaValidator manifest_schema_;
 };
 
-std::unique_ptr<ArtifactSource> open_source(std::string location) {
-  return std::make_unique<LocalFileSource>(std::move(location));
+std::unique_ptr<ArtifactSource> open_source(std::string location, const Roots& roots) {
+  return std::make_unique<LocalFileSource>(std::move(location), roots.resources);
 }
 
 ManifestRecord resolve(const ArtifactSource& source, std::string_view identity) {
@@ -806,76 +729,30 @@ long process_rss_kib(const pid_t pid) {
   return 0;
 }
 
-void validate_witness_schema_document(const Roots& roots) {
-  const auto schema = read_json(roots.resources / "schemas/realization-witness.schema.json");
-  if (schema.value("$schema", "") != "https://json-schema.org/draft/2020-12/schema" ||
-      schema.value("$id", "") != witness_schema || schema.value("type", "") != "object") {
-    throw std::runtime_error("realization witness schema is invalid");
-  }
-}
-
-void validate_observed_surface(const json& surface) {
-  require_object_shape(surface, {"id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"});
-  for (const auto* field : {"id", "owner", "kind", "locator", "direction", "media_type", "observability"}) {
-    if (!non_empty_string(surface.at(field))) throw std::runtime_error(std::string("provided surface has invalid ") + field);
-  }
-  if (!non_empty_string(surface.at("metadata"))) throw std::runtime_error("provided surface metadata must be a non-empty string");
-  const auto direction = surface.at("direction").get<std::string>();
-  if (direction != "inbound" && direction != "outbound" && direction != "bidirectional") {
-    throw std::runtime_error("provided surface direction is invalid");
-  }
-  if (surface.at("observability") != "runtime-witness") {
-    throw std::runtime_error("provided surface observability is invalid");
-  }
-  validate_semantic_surface_contract(surface);
-}
-
-void validate_consumed_surface(const json& surface) {
-  require_object_shape(surface, {"id", "locator", "observed_at", "evidence_sha256"});
-  if (!non_empty_string(surface.at("id")) || !non_empty_string(surface.at("locator")) ||
-      !surface.at("observed_at").is_string() || !valid_observed_at(surface.at("observed_at").get<std::string>()) ||
-      !surface.at("evidence_sha256").is_string() || !valid_sha256(surface.at("evidence_sha256").get<std::string>())) {
-    throw std::runtime_error("consumed surface is invalid");
-  }
-}
-
 json validate_witness(const fs::path& witness_path, const json& installation, std::string_view realization_id,
                       const pid_t pid, const json& resolved, const Roots& roots) {
-  validate_witness_schema_document(roots);
   const auto witness = read_json(witness_path);
   const auto& manifest = installation.at("manifest");
   try {
-    require_object_shape(witness, {
-      "$schema", "schema_version", "identity", "version", "realization_id", "process", "provided_surfaces",
-      "consumed_surfaces", "readiness", "observed_at"
-    });
-    require_object_shape(witness.at("process"), {"pid"});
-    require_object_shape(witness.at("readiness"), {"status", "mechanism", "checked_at"});
-    if (witness.value("$schema", "") != witness_schema || witness.value("schema_version", "") != "0.1.0" ||
-        witness.value("identity", "") != manifest.at("identity").get<std::string>() ||
+    const JsonSchemaValidator schema(roots.resources / "schemas/realization-witness.schema.json");
+    schema.validate(witness, "realization witness");
+    if (witness.value("identity", "") != manifest.at("identity").get<std::string>() ||
         witness.value("version", "") != manifest.at("version").get<std::string>() ||
-        witness.value("realization_id", "") != realization_id || !witness.at("process").at("pid").is_number_integer() ||
-        witness.at("process").at("pid").get<pid_t>() != pid || witness.at("readiness").value("status", "") != "READY" ||
-        !non_empty_string(witness.at("readiness").at("mechanism")) ||
-        !witness.at("readiness").at("checked_at").is_string() ||
-        !valid_observed_at(witness.at("readiness").at("checked_at").get<std::string>()) ||
-        !witness.at("observed_at").is_string() || !valid_observed_at(witness.at("observed_at").get<std::string>())) {
-      throw std::runtime_error("witness identity, process or readiness does not match the candidate");
+        witness.value("realization_id", "") != realization_id ||
+        witness.at("process").at("pid").get<pid_t>() != pid) {
+      throw std::runtime_error("witness identity, version, realization or process does not match the candidate");
     }
     const auto& provided = witness.at("provided_surfaces");
     const auto& consumed = witness.at("consumed_surfaces");
-    if (!provided.is_array() || !consumed.is_array()) throw std::runtime_error("witness surfaces are not arrays");
 
     std::set<std::string> provided_ids;
     for (const auto& surface : provided) {
-      validate_observed_surface(surface);
       if (!provided_ids.insert(surface.at("id").get<std::string>()).second) {
         throw std::runtime_error("witness contains a duplicate provided surface");
       }
     }
     std::set<std::string> consumed_ids;
     for (const auto& surface : consumed) {
-      validate_consumed_surface(surface);
       if (!consumed_ids.insert(surface.at("id").get<std::string>()).second) {
         throw std::runtime_error("witness contains a duplicate consumed surface");
       }
@@ -1100,11 +977,11 @@ void print_manifest(const json& manifest) {
   std::cout << "\nProvenance\n  " << manifest.at("provenance").dump() << '\n';
 }
 
-int search_command(const std::vector<std::string>& args, bool as_json) {
+int search_command(const std::vector<std::string>& args, bool as_json, const Roots& roots) {
   if (args.size() < 2) throw std::runtime_error("usage: synth search <query> --source <source>");
   const auto source_option = option_value(args, "--source");
   if (!source_option) throw std::runtime_error("search requires --source <source>");
-  const auto source = open_source(*source_option);
+  const auto source = open_source(*source_option, roots);
   const auto records = source->manifests();
   json matches = json::array();
   for (const auto& record : records) {
@@ -1121,11 +998,11 @@ int search_command(const std::vector<std::string>& args, bool as_json) {
   return 0;
 }
 
-int info_command(const std::vector<std::string>& args, bool as_json) {
+int info_command(const std::vector<std::string>& args, bool as_json, const Roots& roots) {
   if (args.size() < 2) throw std::runtime_error("usage: synth info <identity> --source <source>");
   const auto source_option = option_value(args, "--source");
   if (!source_option) throw std::runtime_error("info requires --source <source>");
-  const auto source = open_source(*source_option);
+  const auto source = open_source(*source_option, roots);
   const auto record = resolve(*source, args[1]);
   if (as_json) std::cout << manifest_summary(record.manifest).dump() << '\n';
   else print_manifest(record.manifest);
@@ -1136,7 +1013,7 @@ int install_command(const std::vector<std::string>& args, bool as_json, const Ro
   if (args.size() < 2) throw std::runtime_error("usage: synth install <identity> --source <source>");
   const auto source_option = option_value(args, "--source");
   if (!source_option) throw std::runtime_error("install requires --source <source>");
-  const auto source = open_source(*source_option);
+  const auto source = open_source(*source_option, roots);
   const auto record = resolve(*source, args[1]);
   const auto result = install(record, *source, roots);
   if (as_json) {
@@ -1189,8 +1066,8 @@ bool handles(const std::vector<std::string>& args) {
 
 int dispatch(const std::vector<std::string>& args, bool as_json, const Roots& roots) {
   try {
-    if (args[0] == "search") return search_command(args, as_json);
-    if (args[0] == "info") return info_command(args, as_json);
+    if (args[0] == "search") return search_command(args, as_json, roots);
+    if (args[0] == "info") return info_command(args, as_json, roots);
     if (args[0] == "installed") return installed_command(as_json, roots);
     MutationLock lock(roots);
     if (args[0] == "install") return install_command(args, as_json, roots);
@@ -1211,17 +1088,15 @@ int dispatch(const std::vector<std::string>& args, bool as_json, const Roots& ro
 
 json active_surfaces(const Roots& roots) {
   json surfaces = json::array();
+  const JsonSchemaValidator witness_schema(roots.resources / "schemas/realization-witness.schema.json");
   for (const auto& active : active_records(roots)) {
     try {
       const fs::path witness_path = active.at("witness_path").get<std::string>();
       if (sha256(witness_path) != active.value("witness_sha256", "")) continue;
       const auto witness = read_json(witness_path);
-      if (witness.value("realization_id", "") != active.value("realization_id", "") ||
-          witness.at("readiness").value("status", "") != "READY") continue;
-      for (const auto& surface : witness.at("provided_surfaces")) {
-        validate_observed_surface(surface);
-        surfaces.push_back(surface);
-      }
+      witness_schema.validate(witness, "realization witness");
+      if (witness.value("realization_id", "") != active.value("realization_id", "")) continue;
+      for (const auto& surface : witness.at("provided_surfaces")) surfaces.push_back(surface);
     } catch (const std::exception&) {
     }
   }
@@ -1230,15 +1105,15 @@ json active_surfaces(const Roots& roots) {
 
 json observed_relations(const Roots& roots) {
   json relations = json::array();
+  const JsonSchemaValidator witness_schema(roots.resources / "schemas/realization-witness.schema.json");
   for (const auto& active : active_records(roots)) {
     try {
       const auto witness_path = active.at("witness_path").get<std::string>();
       if (sha256(witness_path) != active.value("witness_sha256", "")) continue;
       const auto witness = read_json(witness_path);
-      if (witness.value("realization_id", "") != active.value("realization_id", "") ||
-          witness.at("readiness").value("status", "") != "READY") continue;
+      witness_schema.validate(witness, "realization witness");
+      if (witness.value("realization_id", "") != active.value("realization_id", "")) continue;
       for (const auto& consumed : witness.at("consumed_surfaces")) {
-        validate_consumed_surface(consumed);
         const auto id = consumed.at("id").get<std::string>();
         const auto& resolved = active.at("resolved_surfaces");
         const auto resolution = std::find_if(resolved.begin(), resolved.end(), [&id, &consumed](const auto& surface) {
@@ -1269,6 +1144,7 @@ json observed_relations(const Roots& roots) {
 json ecosystem_participants(const Roots& roots) {
   json participants = json::array();
   const auto active = active_records(roots);
+  const JsonSchemaValidator witness_schema(roots.resources / "schemas/realization-witness.schema.json");
   for (const auto& installation : installed_records(roots)) {
     try {
       const auto identity = installation.at("identity").get<std::string>();
@@ -1283,12 +1159,9 @@ json ecosystem_participants(const Roots& roots) {
         const fs::path witness_path = active_match->at("witness_path").get<std::string>();
         if (sha256(witness_path) == active_match->value("witness_sha256", "")) {
           const auto witness = read_json(witness_path);
-          if (witness.value("realization_id", "") == active_match->value("realization_id", "") &&
-              witness.at("readiness").value("status", "") == "READY") {
-            for (const auto& surface : witness.at("provided_surfaces")) {
-              validate_observed_surface(surface);
-              observed.push_back(surface);
-            }
+          witness_schema.validate(witness, "realization witness");
+          if (witness.value("realization_id", "") == active_match->value("realization_id", "")) {
+            for (const auto& surface : witness.at("provided_surfaces")) observed.push_back(surface);
             state = "ACTIVE";
             realization_id = active_match->at("realization_id");
             realization_evidence_ref = witness_path.string();
