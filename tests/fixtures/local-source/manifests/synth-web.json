@@ -48,6 +48,6 @@
     "timeout_ms": 5000
   },
   "resources": {
-    "memory_mib": 128
+    "activation_rss_mib_max": 128
   }
 }

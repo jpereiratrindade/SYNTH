@@ -32,11 +32,11 @@
       "properties": {
         "status": { "const": "READY" },
         "mechanism": { "type": "string", "minLength": 1 },
-        "checked_at": { "type": "string", "format": "date-time" }
+        "checked_at": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" }
       },
       "required": ["status", "mechanism", "checked_at"]
     },
-    "observed_at": { "type": "string", "format": "date-time" }
+    "observed_at": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" }
   },
   "$defs": {
     "observedSurface": {
@@ -50,7 +50,7 @@
         "direction": { "enum": ["inbound", "outbound", "bidirectional"] },
         "media_type": { "type": "string", "minLength": 1 },
         "observability": { "const": "runtime-witness" },
-        "metadata": { "type": "string" }
+        "metadata": { "type": "string", "minLength": 1 }
       },
       "required": ["id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"]
     },
@@ -60,7 +60,7 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "locator": { "type": "string", "minLength": 1 },
-        "observed_at": { "type": "string", "format": "date-time" },
+        "observed_at": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
         "evidence_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       },
       "required": ["id", "locator", "observed_at", "evidence_sha256"]

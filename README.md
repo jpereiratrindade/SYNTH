@@ -58,10 +58,15 @@ SOURCE=tests/fixtures/local-source
 ./build/bin/synth remove synth-web
 ```
 
-`install` verifica SHA-256 e registra conteúdo imutável, sem ativar. `activate`
-resolve superfícies públicas, inicia uma candidata isolada, verifica readiness e
-valida seu witness antes da promoção. Relações só aparecem como `OBSERVED`
-depois dessa testemunha factual.
+`install` adquire um snapshot estável, verifica SHA-256 e extrai exatamente os
+mesmos bytes para o store imutável, sem ativar. `activate` fixa snapshots e
+digests das superfícies de arquivo requeridas, inicia uma candidata isolada,
+aplica um timeout real à readiness e valida integralmente seu witness antes da
+promoção. Relações só aparecem como `OBSERVED` quando a atestação do participante
+corresponde ao digest resolvido pelo SYNTH.
+
+As operações mutantes são serializadas por um lock global nesta versão;
+consultas permanecem paralelas e sem persistência.
 
 `synth status` descreve a realização local. A aceitação do estado no repositório
 também exige o workflow `foundation` verde no `main`.

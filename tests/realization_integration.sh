@@ -49,6 +49,21 @@ expect_failure() {
   fi
 }
 
+repack_artifact() {
+  local source="$1"
+  local payload="$2"
+  tar --create --file "$source/artifacts/synth-web-0.1.0.tar" --directory "$payload" .
+  local digest
+  digest="$(sha256sum "$source/artifacts/synth-web-0.1.0.tar" | cut -d' ' -f1)"
+  python3 - "$source/manifests/synth-web.json" "$digest" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["artifact"]["sha256"] = sys.argv[2]
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+}
+
 manifest="$fixture_source/manifests/synth-web.json"
 artifact="$fixture_source/artifacts/synth-web-0.1.0.tar"
 
@@ -94,6 +109,21 @@ expect_failure "$test_root/invalid.log" "$synth_bin" install synth-web --source 
 grep -F "manifest" "$test_root/invalid.log" >/dev/null
 test ! -e "$XDG_STATE_HOME/synth/installations/synth-web.json"
 
+strict_manifest_source="$test_root/strict-manifest-source"
+cp -a "$fixture_source" "$strict_manifest_source"
+python3 - "$strict_manifest_source/manifests/synth-web.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["unexpected"] = True
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+use_scenario strict-manifest
+expect_failure "$test_root/strict-manifest.log" "$synth_bin" install synth-web --source "$strict_manifest_source"
+grep -F "unexpected field" "$test_root/strict-manifest.log" >/dev/null
+test ! -e "$XDG_STATE_HOME/synth/installations/synth-web.json"
+echo "MANIFEST_SCHEMA_RUNTIME_ENFORCED  PASS"
+
 bad_digest_source="$test_root/bad-digest-source"
 cp -a "$fixture_source" "$bad_digest_source"
 python3 - "$bad_digest_source/manifests/synth-web.json" <<'PY'
@@ -128,6 +158,9 @@ test -f "$installation"
 store_path="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["store_path"])' "$installation")"
 test -x "$store_path/payload/bin/synth-web"
 test -f "$store_path/manifest.json"
+test -f "$store_path/artifact.tar"
+test "$(sha256sum "$store_path/artifact.tar" | cut -d' ' -f1)" = "$expected_digest"
+echo "ARTIFACT_SNAPSHOT_INTEGRITY       PASS"
 test -z "$(find "$store_path" -perm /222 -print -quit)"
 test ! -e "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
 test ! -e "$XDG_RUNTIME_DIR/synth/active/synth-web"
@@ -173,12 +206,37 @@ assert witness["identity"] == "synth-web"
 assert witness["readiness"]["status"] == "READY"
 assert any(item["id"] == "synth.evidence" for item in witness["consumed_surfaces"])
 PY
+python3 - "$active" "$witness" <<'PY'
+import hashlib, json, pathlib, sys
+active = json.loads(pathlib.Path(sys.argv[1]).read_text())
+witness = json.loads(pathlib.Path(sys.argv[2]).read_text())
+resolved = active["resolved_surfaces"][0]
+consumed = witness["consumed_surfaces"][0]
+snapshot = pathlib.Path(resolved["locator"])
+assert snapshot.is_file()
+assert resolved["source_locator"] != resolved["locator"]
+assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == resolved["expected_sha256"]
+assert consumed["evidence_sha256"] == resolved["expected_sha256"]
+assert consumed["locator"] == resolved["locator"]
+PY
 "$synth_bin" surfaces | grep -F "synth-web.http" >/dev/null
 "$synth_bin" relations | grep -F "consumes -> synth.evidence" >/dev/null
 "$synth_bin" relations --json | grep -F '"epistemic_class":"OBSERVED"' >/dev/null
+"$synth_bin" relations --json | grep -F '"assertion_mode":"participant_attestation"' >/dev/null
+"$synth_bin" relations --json | grep -F '"verification":"MATCH"' >/dev/null
+"$synth_bin" relations --json >"$test_root/relations.json"
+python3 - "$source_root/schemas/relation.schema.json" "$test_root/relations.json" <<'PY'
+import json, pathlib, sys
+from jsonschema.validators import validator_for
+schema = json.loads(pathlib.Path(sys.argv[1]).read_text())
+relations = json.loads(pathlib.Path(sys.argv[2]).read_text())
+assert len(relations) == 1
+validator_for(schema)(schema).validate(relations[0])
+PY
 echo "CANDIDATE_ISOLATION               PASS"
 echo "READINESS_VERIFICATION            PASS"
 echo "RUNTIME_WITNESS                   PASS"
+echo "EVIDENCE_SNAPSHOT_PINNED          PASS"
 echo "OBSERVED_RELATION_GROUNDED        PASS"
 
 # The promoted participant runs from the immutable store and serves the public
@@ -280,6 +338,139 @@ test ! -e "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
 "$synth_bin" relations | grep -Fx "No relations observed." >/dev/null
 "$synth_bin" status | grep -F "SYSTEM_SYNTH_READY     PASS" >/dev/null
 echo "RUNTIME_WITNESS_REJECTION         PASS"
+
+# A syntactically valid but false evidence digest is rejected. The relation is
+# grounded in a digest pinned by SYNTH, not merely in participant syntax.
+false_digest_source="$test_root/false-digest-source"
+cp -a "$fixture_source" "$false_digest_source"
+false_digest_payload="$test_root/false-digest-payload"
+mkdir -p "$false_digest_payload"
+tar --extract --file "$artifact" --directory "$false_digest_payload"
+sed -i 's/hashlib.sha256(evidence_bytes).hexdigest()/"a" * 64/' "$false_digest_payload/bin/synth-web"
+repack_artifact "$false_digest_source" "$false_digest_payload"
+use_scenario false-witness-digest
+"$synth_bin" install synth-web --source "$false_digest_source" >/dev/null
+"$synth_bin" evidence >/dev/null
+expect_failure "$test_root/false-digest-witness.log" "$synth_bin" activate synth-web
+grep -F "attestation does not match" "$test_root/false-digest-witness.log" >/dev/null
+test ! -e "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
+"$synth_bin" status | grep -F "SYSTEM_SYNTH_READY     PASS" >/dev/null
+echo "EVIDENCE_DIGEST_BOUND             PASS"
+
+# A witness missing a field required by the published schema is rejected by the
+# runtime before promotion, not discovered later by foundation verification.
+incomplete_witness_source="$test_root/incomplete-witness-source"
+cp -a "$fixture_source" "$incomplete_witness_source"
+incomplete_witness_payload="$test_root/incomplete-witness-payload"
+mkdir -p "$incomplete_witness_payload"
+tar --extract --file "$artifact" --directory "$incomplete_witness_payload"
+sed -i '/"owner": IDENTITY,/d' "$incomplete_witness_payload/bin/synth-web"
+repack_artifact "$incomplete_witness_source" "$incomplete_witness_payload"
+use_scenario incomplete-witness
+"$synth_bin" install synth-web --source "$incomplete_witness_source" >/dev/null
+"$synth_bin" evidence >/dev/null
+expect_failure "$test_root/incomplete-witness.log" "$synth_bin" activate synth-web
+grep -F "owner" "$test_root/incomplete-witness.log" >/dev/null
+test ! -e "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
+"$synth_bin" status | grep -F "SYSTEM_SYNTH_READY     PASS" >/dev/null
+echo "WITNESS_SCHEMA_RUNTIME_ENFORCED   PASS"
+
+# The readiness subprocess is bounded by the declared deadline even when the
+# command itself is still blocked.
+slow_readiness_source="$test_root/slow-readiness-source"
+cp -a "$fixture_source" "$slow_readiness_source"
+slow_readiness_payload="$test_root/slow-readiness-payload"
+mkdir -p "$slow_readiness_payload"
+tar --extract --file "$artifact" --directory "$slow_readiness_payload"
+sed -i '/import pathlib/a import time' "$slow_readiness_payload/bin/readiness"
+sed -i '/def main() -> int:/a\    time.sleep(2)' "$slow_readiness_payload/bin/readiness"
+repack_artifact "$slow_readiness_source" "$slow_readiness_payload"
+python3 - "$slow_readiness_source/manifests/synth-web.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["readiness"]["timeout_ms"] = 500
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+use_scenario slow-readiness
+"$synth_bin" install synth-web --source "$slow_readiness_source" >/dev/null
+"$synth_bin" evidence >/dev/null
+started_ms="$(date +%s%3N)"
+expect_failure "$test_root/slow-readiness.log" "$synth_bin" activate synth-web
+elapsed_ms="$(($(date +%s%3N) - started_ms))"
+grep -F "readiness timed out" "$test_root/slow-readiness.log" >/dev/null
+test "$elapsed_ms" -lt 1800
+test ! -e "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
+"$synth_bin" status | grep -F "SYSTEM_SYNTH_READY     PASS" >/dev/null
+echo "READINESS_TIMEOUT_ENFORCED        PASS"
+
+# Declared kind/media constraints participate in resolution; a same-id but
+# incompatible surface is not silently selected.
+incompatible_source="$test_root/incompatible-source"
+cp -a "$fixture_source" "$incompatible_source"
+python3 - "$incompatible_source/manifests/synth-web.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value["requires"]["surfaces"][0]["kind"] = "http"
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+use_scenario incompatible-resolution
+"$synth_bin" install synth-web --source "$incompatible_source" >/dev/null
+"$synth_bin" evidence >/dev/null
+expect_failure "$test_root/incompatible.log" "$synth_bin" activate synth-web
+grep -F "compatible surface" "$test_root/incompatible.log" >/dev/null
+echo "COMPATIBLE_SURFACE_RESOLUTION     PASS"
+
+# Mutations are serialized across processes. Exactly one activation promotes;
+# the follower observes the committed realization as a no-op.
+use_scenario concurrent
+"$synth_bin" install synth-web --source "$fixture_source" >/dev/null
+"$synth_bin" evidence >/dev/null
+"$synth_bin" activate synth-web >"$test_root/concurrent-1.log" 2>&1 &
+first_activation=$!
+"$synth_bin" activate synth-web >"$test_root/concurrent-2.log" 2>&1 &
+second_activation=$!
+set +e
+wait "$first_activation"
+first_status=$?
+wait "$second_activation"
+second_status=$?
+set -e
+test "$first_status" -eq 0
+test "$second_status" -eq 0
+test "$(grep -l "Activate ... PASS" "$test_root"/concurrent-*.log | wc -l)" -eq 1
+test "$(grep -l "already active" "$test_root"/concurrent-*.log | wc -l)" -eq 1
+test -f "$XDG_STATE_HOME/synth/realizations/synth-web/active.json"
+test -d "$XDG_RUNTIME_DIR/synth/active/synth-web"
+"$synth_bin" status | grep -F "SYSTEM_SYNTH_READY     PASS" >/dev/null
+"$synth_bin" deactivate synth-web >/dev/null
+echo "CONCURRENT_MUTATION_SERIALIZED    PASS"
+
+# A live but unrelated PID cannot turn a stale record into an activation no-op.
+use_scenario process-identity
+"$synth_bin" install synth-web --source "$fixture_source" >/dev/null
+active_dir="$XDG_STATE_HOME/synth/realizations/synth-web"
+runtime_dir="$XDG_RUNTIME_DIR/synth/active/synth-web"
+mkdir -p "$active_dir" "$runtime_dir"
+sleep 30 &
+unrelated_pid=$!
+python3 - "$active_dir/active.json" "$unrelated_pid" "$runtime_dir" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text(json.dumps({
+    "identity": "synth-web",
+    "pid": int(sys.argv[2]),
+    "process_start_ticks": 0,
+    "runtime_path": sys.argv[3],
+}), encoding="utf-8")
+PY
+expect_failure "$test_root/process-identity.log" "$synth_bin" activate synth-web
+grep -F "stale active record" "$test_root/process-identity.log" >/dev/null
+"$synth_bin" deactivate synth-web >/dev/null
+kill "$unrelated_pid" 2>/dev/null || true
+wait "$unrelated_pid" 2>/dev/null || true
+echo "ACTIVE_PROCESS_IDENTITY           PASS"
 
 # CI builds this fixture without any path or build dependency on SYNTH-WEB.
 if grep -R -n -E '/SYNTH-WEB|add_subdirectory.*SYNTH-WEB' "$source_root/CMakeLists.txt" "$source_root/src"; then

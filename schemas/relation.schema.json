@@ -15,8 +15,14 @@
       "type": "string",
       "enum": ["DECLARED", "OBSERVED", "DERIVED"]
     },
+    "observation": { "type": "string", "const": "runtime_witness" },
+    "assertion": { "type": "string", "const": "consumed_surface" },
+    "assertion_mode": { "type": "string", "const": "participant_attestation" },
+    "expected_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "attested_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "verification": { "type": "string", "const": "MATCH" },
     "evidence_ref": { "type": "string", "minLength": 1 },
-    "observed_at": { "type": "string", "format": "date-time" }
+    "observed_at": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" }
   },
   "required": [
     "id",
@@ -25,6 +31,12 @@
     "surface",
     "status",
     "epistemic_class",
+    "observation",
+    "assertion",
+    "assertion_mode",
+    "expected_sha256",
+    "attested_sha256",
+    "verification",
     "evidence_ref",
     "observed_at"
   ]

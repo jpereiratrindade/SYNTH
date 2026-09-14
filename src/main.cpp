@@ -303,6 +303,12 @@ bool grounded_relation(const json& relation) {
     return relation.is_object() && !relation.value("id", "").empty() &&
       !relation.value("source", "").empty() && !relation.value("target", "").empty() &&
       !relation.value("surface", "").empty() && relation.value("epistemic_class", "") == "OBSERVED" &&
+      relation.value("observation", "") == "runtime_witness" &&
+      relation.value("assertion", "") == "consumed_surface" &&
+      relation.value("assertion_mode", "") == "participant_attestation" &&
+      relation.value("verification", "") == "MATCH" &&
+      relation.value("expected_sha256", "") == relation.value("attested_sha256", "") &&
+      relation.value("expected_sha256", "").size() == 64 &&
       !relation.value("observed_at", "").empty() &&
       fs::is_regular_file(relation.at("evidence_ref").get<std::string>());
   } catch (const json::exception&) {
@@ -342,7 +348,8 @@ std::vector<Gate> foundation_gates(const Paths& paths, const fs::path& data) {
   const bool surface_instances = std::all_of(surfaces.begin(), surfaces.end(), valid_surface);
   const bool relation_schema = validate_json_schema(data / "schemas/relation.schema.json",
     "urn:synth:schema:relation:0.1.0",
-    {"id", "source", "target", "surface", "status", "epistemic_class", "evidence_ref", "observed_at"});
+    {"id", "source", "target", "surface", "status", "epistemic_class", "observation", "assertion",
+     "assertion_mode", "expected_sha256", "attested_sha256", "verification", "evidence_ref", "observed_at"});
   const bool relations_grounded = std::all_of(relations.begin(), relations.end(), grounded_relation);
   std::string context_detail;
   const bool context_compatible = validate_context_metadata(foundation, context_detail);
@@ -486,6 +493,7 @@ int main(int argc, char** argv) {
     const auto data = data_root();
     if (realization::handles(args)) return realization::dispatch(args, as_json, realization_roots(paths, data));
     if (args[0] == "evidence") {
+      realization::MutationLock lock(realization_roots(paths, data));
       prepare_evidence_storage(paths);
       const auto evidence = evidence_json(paths, data);
       persist_evidence(paths, evidence);

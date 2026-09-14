@@ -16,7 +16,7 @@
     },
     "media_type": { "type": "string", "minLength": 1 },
     "observability": { "type": "string", "minLength": 1 },
-    "metadata": { "type": "string" }
+    "metadata": { "type": "string", "minLength": 1 }
   },
   "required": [
     "id",

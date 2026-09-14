@@ -11,6 +11,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -18,6 +19,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <sys/file.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -190,44 +192,132 @@ bool valid_sha256(std::string_view value) {
   });
 }
 
+bool non_empty_string(const json& value) {
+  return value.is_string() && !value.get_ref<const std::string&>().empty();
+}
+
+bool string_value(const json& value) {
+  return value.is_string();
+}
+
+void require_object_shape(const json& value, const std::set<std::string>& required,
+                          const std::set<std::string>& optional = {}) {
+  if (!value.is_object()) throw std::runtime_error("expected a JSON object");
+  for (const auto& field : required) {
+    if (!value.contains(field)) throw std::runtime_error("required field is absent: " + field);
+  }
+  for (const auto& [field, ignored] : value.items()) {
+    (void)ignored;
+    if (!required.contains(field) && !optional.contains(field)) {
+      throw std::runtime_error("unexpected field: " + field);
+    }
+  }
+}
+
+void require_string_array(const json& value, std::string_view field) {
+  if (!value.is_array() || !std::all_of(value.begin(), value.end(), string_value)) {
+    throw std::runtime_error(std::string(field) + " must be an array of strings");
+  }
+}
+
+bool valid_observed_at(std::string_view value) {
+  if (value.size() != 20 || value[4] != '-' || value[7] != '-' || value[10] != 'T' ||
+      value[13] != ':' || value[16] != ':' || value[19] != 'Z') return false;
+  for (const auto index : {0U, 1U, 2U, 3U, 5U, 6U, 8U, 9U, 11U, 12U, 14U, 15U, 17U, 18U}) {
+    if (value[index] < '0' || value[index] > '9') return false;
+  }
+  const auto number = [&value](const std::size_t offset, const std::size_t size) {
+    return std::stoi(std::string(value.substr(offset, size)));
+  };
+  const auto month = number(5, 2);
+  const auto day = number(8, 2);
+  const auto hour = number(11, 2);
+  const auto minute = number(14, 2);
+  const auto second = number(17, 2);
+  const auto year = number(0, 4);
+  if (year < 1 || month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+  std::array<int, 12> days{31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) days[1] = 29;
+  return day >= 1 && day <= days[static_cast<std::size_t>(month - 1)];
+}
+
 void validate_surface_declaration(const json& surface) {
-  if (!surface.is_object() || surface.value("id", "").empty()) throw std::runtime_error("surface declaration requires a non-empty id");
+  require_object_shape(surface, {"id"}, {"kind", "media_type"});
+  if (!non_empty_string(surface.at("id"))) throw std::runtime_error("surface declaration requires a non-empty id");
+  for (const auto* field : {"kind", "media_type"}) {
+    if (surface.contains(field) && !non_empty_string(surface.at(field))) {
+      throw std::runtime_error(std::string("surface declaration has invalid ") + field);
+    }
+  }
 }
 
 void validate_manifest(const json& manifest) {
   try {
+    require_object_shape(manifest, {
+      "$schema", "schema_version", "identity", "version", "description", "artifact", "provenance",
+      "provides", "requires", "realization", "readiness", "resources"
+    });
     if (!manifest.is_object() || manifest.value("$schema", "") != manifest_schema ||
         manifest.value("schema_version", "") != "0.1.0" || !valid_identity(manifest.value("identity", "")) ||
         manifest.value("version", "").empty() || manifest.value("description", "").empty()) {
       throw std::runtime_error("manifest identity, version or schema is invalid");
     }
     const auto& artifact = manifest.at("artifact");
+    require_object_shape(artifact, {"path", "media_type", "sha256"});
     if (artifact.value("media_type", "") != "application/x-tar" ||
         !valid_relative_path(artifact.value("path", "")) || !valid_sha256(artifact.value("sha256", ""))) {
       throw std::runtime_error("artifact path, media type or SHA-256 is invalid");
     }
-    if (!manifest.at("provenance").is_object() || manifest.at("provenance").value("license", "").empty()) {
+    const auto& provenance = manifest.at("provenance");
+    require_object_shape(provenance, {"source", "revision", "license"});
+    if (!non_empty_string(provenance.at("source")) || !non_empty_string(provenance.at("revision")) ||
+        !non_empty_string(provenance.at("license"))) {
       throw std::runtime_error("artifact provenance is invalid");
     }
-    for (const auto& surface : manifest.at("provides").at("surfaces")) validate_surface_declaration(surface);
-    for (const auto& surface : manifest.at("requires").at("surfaces")) validate_surface_declaration(surface);
+    std::set<std::string> surface_ids;
+    for (const auto* set_name : {"provides", "requires"}) {
+      const auto& surface_set = manifest.at(set_name);
+      require_object_shape(surface_set, {"surfaces"});
+      if (!surface_set.at("surfaces").is_array()) throw std::runtime_error("surface set must be an array");
+      surface_ids.clear();
+      for (const auto& surface : surface_set.at("surfaces")) {
+        validate_surface_declaration(surface);
+        if (!surface_ids.insert(surface.at("id").get<std::string>()).second) {
+          throw std::runtime_error(std::string(set_name) + " contains a duplicate surface id");
+        }
+      }
+    }
     const auto& realization = manifest.at("realization");
+    require_object_shape(realization, {"entrypoint", "arguments", "environment_allowed"});
     if (!valid_relative_path(realization.value("entrypoint", "")) || !realization.at("arguments").is_array() ||
         !realization.at("environment_allowed").is_array()) throw std::runtime_error("realization declaration is invalid");
     const std::set<std::string> supported_environment{
       "SYNTH_REALIZATION_ID", "SYNTH_WITNESS_PATH", "SYNTH_RESOLVED_SURFACES_PATH"
     };
+    require_string_array(realization.at("arguments"), "realization.arguments");
+    std::set<std::string> requested_environment;
     for (const auto& name : realization.at("environment_allowed")) {
       if (!name.is_string() || !supported_environment.contains(name.get<std::string>())) {
         throw std::runtime_error("realization requests an unsupported environment variable");
       }
+      if (!requested_environment.insert(name.get<std::string>()).second) {
+        throw std::runtime_error("realization requests a duplicate environment variable");
+      }
     }
     const auto& readiness = manifest.at("readiness");
+    require_object_shape(readiness, {"type", "entrypoint", "arguments", "timeout_ms"});
     if (readiness.value("type", "") != "command" || !valid_relative_path(readiness.value("entrypoint", "")) ||
-        !readiness.at("arguments").is_array() || readiness.value("timeout_ms", 0) <= 0) {
+        !readiness.at("arguments").is_array() || !readiness.at("timeout_ms").is_number_integer() ||
+        readiness.at("timeout_ms").get<int>() < 100 || readiness.at("timeout_ms").get<int>() > 60000) {
       throw std::runtime_error("readiness declaration is invalid");
     }
-    if (manifest.contains("resources") && !manifest.at("resources").is_object()) throw std::runtime_error("resource envelope is invalid");
+    require_string_array(readiness.at("arguments"), "readiness.arguments");
+    const auto& resources = manifest.at("resources");
+    require_object_shape(resources, {}, {"activation_rss_mib_max"});
+    if (resources.contains("activation_rss_mib_max") &&
+        (!resources.at("activation_rss_mib_max").is_number_integer() || resources.at("activation_rss_mib_max").get<long>() < 1)) {
+      throw std::runtime_error("activation RSS admission threshold is invalid");
+    }
   } catch (const json::exception& error) {
     throw std::runtime_error("manifest does not conform to the required model: " + std::string(error.what()));
   }
@@ -258,7 +348,11 @@ class LocalFileSource final : public ArtifactSource {
     for (const auto& entry : fs::directory_iterator(root_ / "manifests")) {
       if (!entry.is_regular_file() || entry.path().extension() != ".json") continue;
       auto manifest = read_json(entry.path());
-      validate_manifest(manifest);
+      try {
+        validate_manifest(manifest);
+      } catch (const std::exception& error) {
+        throw std::runtime_error("manifest does not conform to the required model: " + std::string(error.what()));
+      }
       records.push_back({std::move(manifest)});
     }
     std::sort(records.begin(), records.end(), [](const auto& left, const auto& right) {
@@ -357,22 +451,26 @@ InstallResult install(const ManifestRecord& record, const ArtifactSource& source
     throw std::runtime_error("identity is already installed with different content; upgrade is not implemented");
   }
 
-  const auto artifact = source.acquire(record);
-  const auto actual_digest = sha256(artifact);
-  if (actual_digest != expected_digest) {
-    record_transaction(roots, "install", identity, "REJECTED", {{"reason", "SHA-256 mismatch"}, {"expected", expected_digest}, {"observed", actual_digest}});
-    throw std::runtime_error("artifact digest mismatch; candidate REJECTED and active state unchanged");
-  }
-  validate_tar(artifact);
-
   const auto store_root = roots.data / "store";
   ensure_directory(store_root);
   const auto destination = store_root / expected_digest;
   if (!fs::exists(destination)) {
     const auto stage = store_root / (".stage-" + operation_id("install"));
     try {
+      ensure_directory(stage);
+      const auto artifact_snapshot = stage / "artifact.tar";
+      const auto artifact = source.acquire(record);
+      if (!fs::copy_file(artifact, artifact_snapshot, fs::copy_options::none)) {
+        throw std::runtime_error("artifact acquisition did not create a stable snapshot");
+      }
+      const auto actual_digest = sha256(artifact_snapshot);
+      if (actual_digest != expected_digest) {
+        record_transaction(roots, "install", identity, "REJECTED", {{"reason", "SHA-256 mismatch"}, {"expected", expected_digest}, {"observed", actual_digest}});
+        throw std::runtime_error("artifact digest mismatch; candidate REJECTED and active state unchanged");
+      }
+      validate_tar(artifact_snapshot);
       ensure_directory(stage / "payload");
-      const auto extraction = run_capture({"tar", "--extract", "--file", artifact.string(), "--directory", (stage / "payload").string(),
+      const auto extraction = run_capture({"tar", "--extract", "--file", artifact_snapshot.string(), "--directory", (stage / "payload").string(),
                                            "--no-same-owner", "--no-same-permissions"});
       if (extraction.exit_code != 0) throw std::runtime_error("artifact extraction failed: " + extraction.output);
       write_json_atomic(stage / "manifest.json", record.manifest);
@@ -383,6 +481,11 @@ InstallResult install(const ManifestRecord& record, const ArtifactSource& source
       fs::permissions(stage, fs::perms::owner_write, fs::perm_options::add, ignored);
       fs::remove_all(stage, ignored);
       throw;
+    }
+  } else {
+    const auto artifact_snapshot = destination / "artifact.tar";
+    if (!fs::is_regular_file(artifact_snapshot) || sha256(artifact_snapshot) != expected_digest) {
+      throw std::runtime_error("existing digest store entry cannot be verified");
     }
   }
 
@@ -466,23 +569,70 @@ json available_surfaces(const Roots& roots) {
   return surfaces;
 }
 
-json resolve_requirements(const json& manifest, const Roots& roots) {
+bool compatible_surface(const json& requirement, const json& surface) {
+  if (surface.value("id", "") != requirement.value("id", "")) return false;
+  for (const auto* property : {"kind", "media_type"}) {
+    if (requirement.contains(property) && surface.value(property, "") != requirement.at(property).get<std::string>()) {
+      return false;
+    }
+  }
+  return true;
+}
+
+json pin_file_surface(json surface, const Roots& roots, std::string_view identity,
+                      std::string_view realization_id, const std::size_t index) {
+  if (surface.value("kind", "") != "file") {
+    throw OperationFailure("BLOCKED", "v0.1.0 can only pin file requirements: " + surface.value("id", ""));
+  }
+  const fs::path source = surface.at("locator").get<std::string>();
+  if (!fs::is_regular_file(source)) {
+    throw OperationFailure("BLOCKED", "resolved file surface is no longer available: " + surface.value("id", ""));
+  }
+  const auto snapshot_root = roots.state / "realizations" / std::string(identity) / "resolved" / std::string(realization_id);
+  ensure_directory(snapshot_root);
+  const auto snapshot = snapshot_root / (std::to_string(index) + ".snapshot");
+  const auto temporary = snapshot.string() + ".tmp-" + std::to_string(::getpid());
+  if (!fs::copy_file(source, temporary, fs::copy_options::none)) {
+    throw std::runtime_error("cannot snapshot resolved surface: " + source.string());
+  }
+  fs::rename(temporary, snapshot);
+  fs::permissions(snapshot, fs::perms::owner_write | fs::perms::group_write | fs::perms::others_write,
+                  fs::perm_options::remove);
+  surface["source_locator"] = source.string();
+  surface["locator"] = snapshot.string();
+  surface["expected_sha256"] = sha256(snapshot);
+  surface["resolution"] = "RESOLVED";
+  return surface;
+}
+
+json resolve_requirements(const json& manifest, const Roots& roots, std::string_view realization_id) {
   const auto available = available_surfaces(roots);
   json resolved = json::array();
-  for (const auto& requirement : manifest.at("requires").at("surfaces")) {
-    const auto id = requirement.at("id").get<std::string>();
-    const auto match = std::find_if(available.begin(), available.end(), [&id](const auto& surface) {
-      return surface.value("id", "") == id;
-    });
-    if (match == available.end()) {
-      throw OperationFailure("BLOCKED", "required surface is not observed: " + id +
-        "; produce or activate that public surface before retrying");
+  const auto identity = manifest.at("identity").get<std::string>();
+  const auto snapshot_root = roots.state / "realizations" / identity / "resolved" / std::string(realization_id);
+  try {
+    std::size_t index = 0;
+    for (const auto& requirement : manifest.at("requires").at("surfaces")) {
+      const auto id = requirement.at("id").get<std::string>();
+      std::vector<json> matches;
+      std::copy_if(available.begin(), available.end(), std::back_inserter(matches), [&requirement](const auto& surface) {
+        return compatible_surface(requirement, surface);
+      });
+      if (matches.empty()) {
+        throw OperationFailure("BLOCKED", "required compatible surface is not observed: " + id +
+          "; produce or activate that public surface before retrying");
+      }
+      if (matches.size() != 1) {
+        throw OperationFailure("BLOCKED", "required surface is ambiguous: " + id);
+      }
+      resolved.push_back(pin_file_surface(std::move(matches.front()), roots, identity, realization_id, index++));
     }
-    auto surface = *match;
-    surface["resolution"] = "RESOLVED";
-    resolved.push_back(std::move(surface));
+    return resolved;
+  } catch (...) {
+    std::error_code ignored;
+    fs::remove_all(snapshot_root, ignored);
+    throw;
   }
-  return resolved;
 }
 
 fs::path payload_entry(const json& installation, std::string_view relative) {
@@ -540,13 +690,30 @@ pid_t spawn_candidate(const fs::path& executable, const std::vector<std::string>
   return child;
 }
 
+void stop_readiness_command(const pid_t pid) {
+  if (pid <= 0) return;
+  ::kill(-pid, SIGTERM);
+  ::kill(pid, SIGTERM);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+  int status = 0;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const auto observed = ::waitpid(pid, &status, WNOHANG);
+    if (observed == pid || (observed < 0 && errno == ECHILD)) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  ::kill(-pid, SIGKILL);
+  ::kill(pid, SIGKILL);
+  while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+}
+
 int run_candidate_command(const fs::path& executable, const std::vector<std::string>& declared_arguments,
                           const fs::path& working_directory, std::vector<std::string> environment,
-                          const fs::path& log_path) {
+                          const fs::path& log_path, const std::chrono::steady_clock::time_point deadline) {
+  if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("candidate readiness timed out");
   const pid_t child = ::fork();
   if (child < 0) throw std::runtime_error("cannot fork readiness command");
   if (child == 0) {
-    if (::chdir(working_directory.c_str()) != 0) _exit(126);
+    if (::setsid() < 0 || ::chdir(working_directory.c_str()) != 0) _exit(126);
     const int log = ::open(log_path.c_str(), O_CREAT | O_WRONLY | O_APPEND, 0600);
     if (log < 0) _exit(126);
     ::dup2(log, STDOUT_FILENO);
@@ -559,9 +726,20 @@ int run_candidate_command(const fs::path& executable, const std::vector<std::str
     ::execve(executable.c_str(), argv.data(), envp.data());
     _exit(127);
   }
-  int status = 0;
-  while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {}
-  return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+  while (true) {
+    if (std::chrono::steady_clock::now() >= deadline) {
+      stop_readiness_command(child);
+      throw std::runtime_error("candidate readiness timed out");
+    }
+    int status = 0;
+    const auto observed = ::waitpid(child, &status, WNOHANG);
+    if (observed == child) return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+    if (observed < 0 && errno != EINTR) {
+      stop_readiness_command(child);
+      throw std::runtime_error("cannot observe readiness command");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 }
 
 void stop_process(const pid_t pid) {
@@ -605,39 +783,101 @@ void validate_witness_schema_document(const Roots& roots) {
   }
 }
 
+void validate_observed_surface(const json& surface) {
+  require_object_shape(surface, {"id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"});
+  for (const auto* field : {"id", "owner", "kind", "locator", "direction", "media_type", "observability"}) {
+    if (!non_empty_string(surface.at(field))) throw std::runtime_error(std::string("provided surface has invalid ") + field);
+  }
+  if (!non_empty_string(surface.at("metadata"))) throw std::runtime_error("provided surface metadata must be a non-empty string");
+  const auto direction = surface.at("direction").get<std::string>();
+  if (direction != "inbound" && direction != "outbound" && direction != "bidirectional") {
+    throw std::runtime_error("provided surface direction is invalid");
+  }
+  if (surface.at("observability") != "runtime-witness") {
+    throw std::runtime_error("provided surface observability is invalid");
+  }
+}
+
+void validate_consumed_surface(const json& surface) {
+  require_object_shape(surface, {"id", "locator", "observed_at", "evidence_sha256"});
+  if (!non_empty_string(surface.at("id")) || !non_empty_string(surface.at("locator")) ||
+      !surface.at("observed_at").is_string() || !valid_observed_at(surface.at("observed_at").get<std::string>()) ||
+      !surface.at("evidence_sha256").is_string() || !valid_sha256(surface.at("evidence_sha256").get<std::string>())) {
+    throw std::runtime_error("consumed surface is invalid");
+  }
+}
+
 json validate_witness(const fs::path& witness_path, const json& installation, std::string_view realization_id,
                       const pid_t pid, const json& resolved, const Roots& roots) {
   validate_witness_schema_document(roots);
   const auto witness = read_json(witness_path);
   const auto& manifest = installation.at("manifest");
   try {
+    require_object_shape(witness, {
+      "$schema", "schema_version", "identity", "version", "realization_id", "process", "provided_surfaces",
+      "consumed_surfaces", "readiness", "observed_at"
+    });
+    require_object_shape(witness.at("process"), {"pid"});
+    require_object_shape(witness.at("readiness"), {"status", "mechanism", "checked_at"});
     if (witness.value("$schema", "") != witness_schema || witness.value("schema_version", "") != "0.1.0" ||
         witness.value("identity", "") != manifest.at("identity").get<std::string>() ||
         witness.value("version", "") != manifest.at("version").get<std::string>() ||
-        witness.value("realization_id", "") != realization_id || witness.at("process").value("pid", 0) != pid ||
-        witness.at("readiness").value("status", "") != "READY" || witness.value("observed_at", "").empty()) {
+        witness.value("realization_id", "") != realization_id || !witness.at("process").at("pid").is_number_integer() ||
+        witness.at("process").at("pid").get<pid_t>() != pid || witness.at("readiness").value("status", "") != "READY" ||
+        !non_empty_string(witness.at("readiness").at("mechanism")) ||
+        !witness.at("readiness").at("checked_at").is_string() ||
+        !valid_observed_at(witness.at("readiness").at("checked_at").get<std::string>()) ||
+        !witness.at("observed_at").is_string() || !valid_observed_at(witness.at("observed_at").get<std::string>())) {
       throw std::runtime_error("witness identity, process or readiness does not match the candidate");
     }
     const auto& provided = witness.at("provided_surfaces");
     const auto& consumed = witness.at("consumed_surfaces");
     if (!provided.is_array() || !consumed.is_array()) throw std::runtime_error("witness surfaces are not arrays");
 
+    std::set<std::string> provided_ids;
+    for (const auto& surface : provided) {
+      validate_observed_surface(surface);
+      if (!provided_ids.insert(surface.at("id").get<std::string>()).second) {
+        throw std::runtime_error("witness contains a duplicate provided surface");
+      }
+    }
+    std::set<std::string> consumed_ids;
+    for (const auto& surface : consumed) {
+      validate_consumed_surface(surface);
+      if (!consumed_ids.insert(surface.at("id").get<std::string>()).second) {
+        throw std::runtime_error("witness contains a duplicate consumed surface");
+      }
+    }
+
+    if (provided.size() != manifest.at("provides").at("surfaces").size()) {
+      throw std::runtime_error("witness provided surface set differs from the manifest");
+    }
+
     for (const auto& declaration : manifest.at("provides").at("surfaces")) {
       const auto id = declaration.at("id").get<std::string>();
-      const auto match = std::find_if(provided.begin(), provided.end(), [&id](const auto& surface) {
-        return surface.value("id", "") == id && surface.value("observability", "") == "runtime-witness" &&
-               !surface.value("locator", "").empty();
+      const auto match = std::find_if(provided.begin(), provided.end(), [&id, &declaration, &manifest](const auto& surface) {
+        if (surface.value("id", "") != id || surface.value("owner", "") != manifest.at("identity").get<std::string>()) return false;
+        for (const auto* property : {"kind", "media_type"}) {
+          if (declaration.contains(property) &&
+              surface.value(property, "") != declaration.at(property).template get<std::string>()) return false;
+        }
+        return true;
       });
       if (match == provided.end()) throw std::runtime_error("witness does not observe declared provided surface: " + id);
     }
+    if (consumed.size() != resolved.size()) throw std::runtime_error("witness consumed surface set differs from resolution");
     for (const auto& resolution : resolved) {
       const auto id = resolution.at("id").get<std::string>();
       const auto locator = resolution.at("locator").get<std::string>();
-      const auto match = std::find_if(consumed.begin(), consumed.end(), [&id, &locator](const auto& surface) {
+      const auto expected_digest = resolution.at("expected_sha256").get<std::string>();
+      if (!valid_sha256(expected_digest) || !fs::is_regular_file(locator) || sha256(locator) != expected_digest) {
+        throw std::runtime_error("resolved evidence snapshot is not intact: " + id);
+      }
+      const auto match = std::find_if(consumed.begin(), consumed.end(), [&id, &locator, &expected_digest](const auto& surface) {
         return surface.value("id", "") == id && surface.value("locator", "") == locator &&
-               valid_sha256(surface.value("evidence_sha256", "")) && !surface.value("observed_at", "").empty();
+               surface.value("evidence_sha256", "") == expected_digest;
       });
-      if (match == consumed.end()) throw std::runtime_error("witness does not prove consumption of resolved surface: " + id);
+      if (match == consumed.end()) throw std::runtime_error("witness attestation does not match resolved evidence: " + id);
     }
   } catch (const json::exception& error) {
     throw std::runtime_error("witness does not conform to the required model: " + std::string(error.what()));
@@ -670,7 +910,7 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
   const auto active_path = active_record_path(roots, identity);
   if (fs::is_regular_file(active_path)) {
     const auto active = read_json(active_path);
-    if (process_alive(active.value("pid", 0))) {
+    if (active_process_matches(active)) {
       if (as_json) std::cout << json{{"status", "NO_OP"}, {"identity", identity}, {"reason", "already active"}}.dump() << '\n';
       else std::cout << identity << " is already active.\nNo changes required.\n";
       return 0;
@@ -680,21 +920,24 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
 
   const auto installation = read_json(installation_path);
   const auto& manifest = installation.at("manifest");
+  const auto realization_id = operation_id(identity);
   json resolved;
   try {
-    resolved = resolve_requirements(manifest, roots);
+    resolved = resolve_requirements(manifest, roots, realization_id);
   } catch (const OperationFailure& failure) {
     record_transaction(roots, "activate", identity, failure.status(), {{"reason", failure.what()}});
     throw;
   }
 
-  const auto realization_id = operation_id(identity);
   const auto candidate = roots.runtime / "candidates" / realization_id;
   const auto active_runtime = roots.runtime / "active" / identity;
+  const auto resolution_root = roots.state / "realizations" / identity / "resolved" / realization_id;
   const auto witness_path = candidate / "witness.json";
   const auto resolved_path = candidate / "resolved-surfaces.json";
   const auto candidate_log = candidate / "candidate.log";
   const auto readiness_log = candidate / "readiness.log";
+  const auto realization_state = roots.state / "realizations" / identity;
+  const auto preserved_witness = realization_state / ("witness-" + realization_id + ".json");
   ensure_directory(candidate);
   write_json_atomic(resolved_path, {{"epistemic_class", "RESOLVED"}, {"surfaces", resolved}});
   const auto environment = candidate_environment(manifest, realization_id, witness_path, resolved_path);
@@ -704,6 +947,8 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
   const auto readiness_arguments = manifest.at("readiness").at("arguments").get<std::vector<std::string>>();
   pid_t pid = 0;
   bool active_record_written = false;
+  bool runtime_promoted = false;
+  bool witness_preserved = false;
   try {
     pid = spawn_candidate(executable, arguments, candidate, environment, candidate_log);
     const auto start_ticks = process_start_ticks(pid);
@@ -713,7 +958,7 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
     bool ready = false;
     while (std::chrono::steady_clock::now() < deadline) {
       if (!process_alive(pid)) throw std::runtime_error("candidate exited before readiness");
-      if (run_candidate_command(readiness_executable, readiness_arguments, candidate, environment, readiness_log) == 0) {
+      if (run_candidate_command(readiness_executable, readiness_arguments, candidate, environment, readiness_log, deadline) == 0) {
         ready = true;
         break;
       }
@@ -721,17 +966,17 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
     }
     if (!ready) throw std::runtime_error("candidate readiness timed out");
     const auto rss_kib = process_rss_kib(pid);
-    if (manifest.contains("resources") && manifest.at("resources").contains("memory_mib")) {
-      const auto limit_kib = manifest.at("resources").at("memory_mib").get<long>() * 1024;
-      if (rss_kib <= 0 || rss_kib > limit_kib) throw std::runtime_error("candidate exceeded or could not prove its memory envelope");
+    if (manifest.at("resources").contains("activation_rss_mib_max")) {
+      const auto limit_kib = manifest.at("resources").at("activation_rss_mib_max").get<long>() * 1024;
+      if (rss_kib <= 0 || rss_kib > limit_kib) throw std::runtime_error("candidate exceeded or could not prove its activation RSS threshold");
     }
     const auto witness = validate_witness(witness_path, installation, realization_id, pid, resolved, roots);
-    const auto realization_state = roots.state / "realizations" / identity;
-    const auto preserved_witness = realization_state / ("witness-" + realization_id + ".json");
     write_json_atomic(preserved_witness, witness);
+    witness_preserved = true;
     const auto witness_digest = sha256(preserved_witness);
     ensure_directory(active_runtime.parent_path());
     fs::rename(candidate, active_runtime);
+    runtime_promoted = true;
     const json active{
       {"identity", identity}, {"version", installation.at("version")}, {"digest", installation.at("digest")},
       {"realization_id", realization_id}, {"pid", pid}, {"process_start_ticks", *start_ticks},
@@ -749,7 +994,9 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
     stop_process(pid);
     std::error_code ignored;
     fs::remove_all(candidate, ignored);
-    fs::remove_all(active_runtime, ignored);
+    if (runtime_promoted) fs::remove_all(active_runtime, ignored);
+    fs::remove_all(resolution_root, ignored);
+    if (witness_preserved) fs::remove(preserved_witness, ignored);
     if (active_record_written) fs::remove(active_path, ignored);
     record_transaction(roots, "activate", identity, "REJECTED", {{"reason", error.what()}});
     throw OperationFailure("REJECTED", std::string(error.what()) + "; active state unchanged");
@@ -767,9 +1014,13 @@ int deactivate_command(const std::vector<std::string>& args, bool as_json, const
     return 0;
   }
   const auto active = read_json(active_path);
+  const auto expected_runtime = roots.runtime / "active" / identity;
+  if (fs::path(active.value("runtime_path", "")) != expected_runtime) {
+    throw std::runtime_error("active realization record contains an unsafe runtime path");
+  }
   if (active_process_matches(active)) stop_process(active.value("pid", 0));
   std::error_code ignored;
-  fs::remove_all(fs::path(active.value("runtime_path", "")), ignored);
+  fs::remove_all(expected_runtime, ignored);
   if (!fs::remove(active_path)) throw std::runtime_error("cannot remove active realization record");
   record_transaction(roots, "deactivate", identity, "DEACTIVATED", {{"realization_id", active.value("realization_id", "")}});
   if (as_json) std::cout << json{{"status", "DEACTIVATED"}, {"identity", identity}}.dump() << '\n';
@@ -881,6 +1132,23 @@ int installed_command(bool as_json, const Roots& roots) {
 
 } // namespace
 
+MutationLock::MutationLock(const Roots& roots) {
+  ensure_directory(roots.runtime);
+  const auto path = roots.runtime / "transaction.lock";
+  descriptor_ = ::open(path.c_str(), O_CREAT | O_RDONLY | O_CLOEXEC, 0600);
+  if (descriptor_ < 0) throw std::runtime_error("cannot open mutation lock: " + path.string());
+  while (::flock(descriptor_, LOCK_EX) != 0) {
+    if (errno == EINTR) continue;
+    ::close(descriptor_);
+    descriptor_ = -1;
+    throw std::runtime_error("cannot acquire mutation lock: " + path.string());
+  }
+}
+
+MutationLock::~MutationLock() {
+  if (descriptor_ >= 0) ::close(descriptor_);
+}
+
 bool handles(const std::vector<std::string>& args) {
   if (args.empty()) return false;
   return args[0] == "search" || args[0] == "info" || args[0] == "install" || args[0] == "installed" ||
@@ -891,8 +1159,9 @@ int dispatch(const std::vector<std::string>& args, bool as_json, const Roots& ro
   try {
     if (args[0] == "search") return search_command(args, as_json);
     if (args[0] == "info") return info_command(args, as_json);
-    if (args[0] == "install") return install_command(args, as_json, roots);
     if (args[0] == "installed") return installed_command(as_json, roots);
+    MutationLock lock(roots);
+    if (args[0] == "install") return install_command(args, as_json, roots);
     if (args[0] == "activate") return activate_command(args, as_json, roots);
     if (args[0] == "deactivate") return deactivate_command(args, as_json, roots);
     if (args[0] == "remove") return remove_command(args, as_json, roots);
@@ -917,7 +1186,10 @@ json active_surfaces(const Roots& roots) {
       const auto witness = read_json(witness_path);
       if (witness.value("realization_id", "") != active.value("realization_id", "") ||
           witness.at("readiness").value("status", "") != "READY") continue;
-      for (const auto& surface : witness.at("provided_surfaces")) surfaces.push_back(surface);
+      for (const auto& surface : witness.at("provided_surfaces")) {
+        validate_observed_surface(surface);
+        surfaces.push_back(surface);
+      }
     } catch (const std::exception&) {
     }
   }
@@ -934,16 +1206,25 @@ json observed_relations(const Roots& roots) {
       if (witness.value("realization_id", "") != active.value("realization_id", "") ||
           witness.at("readiness").value("status", "") != "READY") continue;
       for (const auto& consumed : witness.at("consumed_surfaces")) {
+        validate_consumed_surface(consumed);
         const auto id = consumed.at("id").get<std::string>();
         const auto& resolved = active.at("resolved_surfaces");
         const auto resolution = std::find_if(resolved.begin(), resolved.end(), [&id, &consumed](const auto& surface) {
           return surface.value("id", "") == id && surface.value("locator", "") == consumed.value("locator", "");
         });
-        if (resolution == resolved.end() || !valid_sha256(consumed.value("evidence_sha256", ""))) continue;
+        if (resolution == resolved.end()) continue;
+        const auto expected_digest = resolution->value("expected_sha256", "");
+        const auto attested_digest = consumed.value("evidence_sha256", "");
+        const auto locator = resolution->value("locator", "");
+        if (!valid_sha256(expected_digest) || attested_digest != expected_digest ||
+            !fs::is_regular_file(locator) || sha256(locator) != expected_digest) continue;
         relations.push_back({
           {"id", active.at("identity").get<std::string>() + "-consumes-" + id},
           {"source", active.at("identity")}, {"target", resolution->value("owner", "")},
           {"surface", id}, {"status", "ACTIVE"}, {"epistemic_class", "OBSERVED"},
+          {"observation", "runtime_witness"}, {"assertion", "consumed_surface"},
+          {"assertion_mode", "participant_attestation"}, {"expected_sha256", expected_digest},
+          {"attested_sha256", attested_digest}, {"verification", "MATCH"},
           {"evidence_ref", witness_path}, {"observed_at", consumed.at("observed_at")}
         });
       }

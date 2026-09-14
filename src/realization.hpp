@@ -18,6 +18,18 @@ struct Roots {
   fs::path resources;
 };
 
+class MutationLock {
+ public:
+  explicit MutationLock(const Roots& roots);
+  ~MutationLock();
+
+  MutationLock(const MutationLock&) = delete;
+  MutationLock& operator=(const MutationLock&) = delete;
+
+ private:
+  int descriptor_{-1};
+};
+
 bool handles(const std::vector<std::string>& args);
 int dispatch(const std::vector<std::string>& args, bool as_json, const Roots& roots);
 json active_surfaces(const Roots& roots);
