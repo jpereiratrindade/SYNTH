@@ -1,12 +1,12 @@
 # SYNTH-REALIZATION-001 — Primeira realização externa gerenciada
-## v0.1.0 — design-candidate
+## v0.1.0 — implemented
 
 ```context-metadata+json
 {
   "document": {
     "id": "SYNTH-REALIZATION-001",
     "version": "0.1.0",
-    "status": "design-candidate",
+    "status": "implemented",
     "title": "Primeira realização externa gerenciada pelo Sistema SYNTH",
     "project_name": "SYNTH",
     "repository": "jpereiratrindade/SYNTH",
@@ -247,7 +247,7 @@ PURE_QUERY_NO_SIDE_EFFECTS         PASS
 SYNTH_WEB_INDEPENDENT_BUILD        PASS
 SYNTH_WEB_INDEPENDENT_RUNTIME      PASS
 CTEST                              PASS
-CI                                 PENDING
+CI                                 PASS
 ```
 
 Somente após evidência repetível de todos os critérios o status deste documento
