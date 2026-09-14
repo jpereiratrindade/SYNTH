@@ -38,7 +38,22 @@
         "media_type": { "type": "string", "minLength": 1 },
         "epistemic_class": { "const": "DECLARED" }
       },
-      "required": ["id", "epistemic_class"]
+      "required": ["id", "epistemic_class"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "id": { "const": "interface.human.web.v1" } },
+            "required": ["id"]
+          },
+          "then": {
+            "properties": {
+              "kind": { "const": "http" },
+              "media_type": { "const": "text/html" }
+            },
+            "required": ["kind", "media_type"]
+          }
+        }
+      ]
     },
     "observedSurface": {
       "type": "object",
@@ -53,7 +68,21 @@
         "observability": { "type": "string", "minLength": 1 },
         "metadata": { "type": "string", "minLength": 1 }
       },
-      "required": ["id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"]
+      "required": ["id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "id": { "const": "interface.human.web.v1" } },
+            "required": ["id"]
+          },
+          "then": {
+            "properties": {
+              "kind": { "const": "http" },
+              "media_type": { "const": "text/html" }
+            }
+          }
+        }
+      ]
     },
     "participant": {
       "type": "object",
@@ -103,7 +132,27 @@
         "id": { "type": "string", "minLength": 1 },
         "providers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/provider" } }
       },
-      "required": ["id", "providers"]
+      "required": ["id", "providers"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "id": { "const": "interface.human.web.v1" } },
+            "required": ["id"]
+          },
+          "then": {
+            "properties": {
+              "providers": {
+                "items": {
+                  "properties": {
+                    "kind": { "const": "http" },
+                    "media_type": { "const": "text/html" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "relation": {
       "type": "object",

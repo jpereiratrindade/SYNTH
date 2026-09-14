@@ -31,6 +31,7 @@ runner.
 ./build/bin/synth surfaces
 ./build/bin/synth relations
 ./build/bin/synth ecosystem
+./build/bin/synth ecosystem --watch --json
 ./build/bin/synth resolve synth.cli
 ./build/bin/synth evidence
 ```
@@ -83,6 +84,16 @@ identidades. A geração da projeção é um SHA-256 da topologia e permanece es
 enquanto os fatos projetados não mudam. A mesma projeção também integra o
 documento produzido por `synth evidence`.
 
+`synth ecosystem --watch --json` publica um stream NDJSON somente leitura: a
+primeira projeção é imediata e novas linhas aparecem apenas quando `generation`
+muda. O núcleo expõe esse stream como `synth.ecosystem.stream.v1`. Participantes
+podem solicitar seu descritor versionado por `SYNTH_ECOSYSTEM_STREAM`, sem shell,
+daemon, Unix socket ou HTTP no núcleo.
+
+`interface.human.web.v1` é a superfície semântica compartilhada para interfaces
+humanas locais. O contrato exige `kind=http` e `media_type=text/html`; múltiplos
+provedores ativos podem coexistir e são retornados deterministicamente.
+
 `synth status` descreve a realização local. A aceitação do estado no repositório
 também exige o workflow `foundation` verde no `main`.
 
@@ -119,6 +130,7 @@ humana, a evidência registra `configuration: null`.
 - `docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md`
 - `docs/SYNTH-REALIZATION-001-v0.1.0.md`
 - `docs/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md`
+- `docs/SYNTH-LIVE-ECOSYSTEM-001-v0.1.0.md`
 
 ## Licença
 

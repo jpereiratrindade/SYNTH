@@ -83,7 +83,9 @@ válido.
 ## 4. Geração factual
 
 `generation` não é um contador persistido. É o SHA-256 determinístico de
-`participants + surfaces + relations`, excluindo `observed_at`.
+`participants + surfaces + relations`, excluindo apenas o `observed_at` de nível
+superior da projeção. Instantes presentes em relações, locators, realization IDs
+e referências de evidência continuam fatos e participam do conteúdo identificado.
 
 ```text
 mesma topologia -> mesma geração
@@ -100,11 +102,13 @@ prometida nesta versão.
 ```text
 synth ecosystem
 synth ecosystem --json
+synth ecosystem --watch --json
 synth resolve <surface>
 synth resolve <surface> --json
 ```
 
-`ecosystem` retorna a fotografia completa. `resolve` filtra o índice e retorna
+`ecosystem` retorna a fotografia completa. Com `--watch --json`, emite NDJSON
+imediatamente e novamente somente quando `generation` muda. `resolve` filtra o índice e retorna
 somente provedores `ACTIVE + OBSERVED`; uma superfície meramente declarada não
 é resolvida como capacidade disponível.
 
@@ -124,7 +128,8 @@ ecossistema continuam paralelas.
 - namespace representado em JSON, sem FUSE ou `/sys/synth`;
 - escopo somente local;
 - sem assinatura distribuída ou autoridade de pertencimento remoto;
-- sem eventos, subscription ou Unix socket;
+- subscription local limitada ao stream NDJSON de `ecosystem --watch`;
+- sem Unix socket;
 - sem HTTP no núcleo;
 - `resolve` retorna todos os provedores ativos compatíveis, sem política de escolha;
 - geração identificadora de conteúdo, não contador monotônico.
