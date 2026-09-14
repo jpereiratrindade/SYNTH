@@ -7,12 +7,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(nlohmann_json 3.11 REQUIRED)
+find_package(OpenSSL 3.0 REQUIRED COMPONENTS Crypto)
 
-add_executable(synth src/main.cpp)
+add_executable(synth src/main.cpp src/realization.cpp)
 set_target_properties(synth PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_compile_definitions(synth PRIVATE SYNTH_VERSION="${PROJECT_VERSION}")
 target_compile_options(synth PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
-target_link_libraries(synth PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(synth PRIVATE nlohmann_json::nlohmann_json OpenSSL::Crypto)
 
 set(SYNTH_BUILD_DATA_DIR "${CMAKE_BINARY_DIR}/share/synth")
 file(MAKE_DIRECTORY "${SYNTH_BUILD_DATA_DIR}/schemas")
@@ -21,8 +22,13 @@ configure_file(docs/SYNTH-FOUNDATION-001-v0.4.0.md "${SYNTH_BUILD_DATA_DIR}/SYNT
 configure_file(docs/SYNTH-PATCH-FOUNDATION-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-PATCH-FOUNDATION-001-v0.1.0.md" COPYONLY)
 configure_file(docs/SYNTH-FOUNDATION-CORRECTION-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-FOUNDATION-CORRECTION-001-v0.1.0.md" COPYONLY)
 configure_file(docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md" COPYONLY)
+configure_file(docs/SYNTH-REALIZATION-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-REALIZATION-001-v0.1.0.md" COPYONLY)
+configure_file(docs/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md" COPYONLY)
 configure_file(schemas/surface.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/surface.schema.json" COPYONLY)
 configure_file(schemas/relation.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/relation.schema.json" COPYONLY)
+configure_file(schemas/artifact-manifest.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/artifact-manifest.schema.json" COPYONLY)
+configure_file(schemas/realization-witness.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/realization-witness.schema.json" COPYONLY)
+configure_file(schemas/ecosystem-projection.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/ecosystem-projection.schema.json" COPYONLY)
 
 include(GNUInstallDirs)
 install(TARGETS synth RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -32,6 +38,8 @@ install(FILES
   docs/SYNTH-PATCH-FOUNDATION-001-v0.1.0.md
   docs/SYNTH-FOUNDATION-CORRECTION-001-v0.1.0.md
   docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md
+  docs/SYNTH-REALIZATION-001-v0.1.0.md
+  docs/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md
   DESTINATION ${CMAKE_INSTALL_DATADIR}/synth
 )
 install(DIRECTORY schemas/ DESTINATION ${CMAKE_INSTALL_DATADIR}/synth/schemas)
@@ -42,5 +50,10 @@ if(BUILD_TESTING)
     NAME foundation-conformance
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/conformance.sh
             $<TARGET_FILE:synth> ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_BINARY_DIR}
+  )
+  add_test(
+    NAME realization-integration
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/realization_integration.sh
+            $<TARGET_FILE:synth> ${CMAKE_CURRENT_SOURCE_DIR}
   )
 endif()

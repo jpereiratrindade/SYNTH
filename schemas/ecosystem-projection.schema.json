@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:synth:schema:ecosystem-projection:0.1.0",
+  "title": "SYNTH factual ecosystem projection",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "const": "urn:synth:schema:ecosystem-projection:0.1.0" },
+    "schema_version": { "const": "0.1.0" },
+    "generation": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "observed_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "epistemic_class": { "const": "OBSERVED" },
+    "participants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/participant" }
+    },
+    "surfaces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/surfaceIndex" }
+    },
+    "relations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/relation" }
+    }
+  },
+  "$defs": {
+    "declaredSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "media_type": { "type": "string", "minLength": 1 },
+        "epistemic_class": { "const": "DECLARED" }
+      },
+      "required": ["id", "epistemic_class"]
+    },
+    "observedSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "owner": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1 },
+        "locator": { "type": "string", "minLength": 1 },
+        "direction": { "enum": ["inbound", "outbound", "bidirectional"] },
+        "media_type": { "type": "string", "minLength": 1 },
+        "observability": { "type": "string", "minLength": 1 },
+        "metadata": { "type": "string", "minLength": 1 }
+      },
+      "required": ["id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"]
+    },
+    "participant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identity": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["INSTALLED", "ACTIVE"] },
+        "epistemic_class": { "const": "OBSERVED" },
+        "registration_evidence_ref": { "type": "string", "minLength": 1 },
+        "realization_id": { "type": ["string", "null"] },
+        "realization_evidence_ref": { "type": ["string", "null"] },
+        "declared_surfaces": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/declaredSurface" }
+        },
+        "observed_surfaces": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/observedSurface" }
+        }
+      },
+      "required": [
+        "identity", "version", "description", "state", "epistemic_class",
+        "registration_evidence_ref", "realization_id", "realization_evidence_ref",
+        "declared_surfaces", "observed_surfaces"
+      ]
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "identity": { "type": "string", "minLength": 1 },
+        "state": { "enum": ["INSTALLED", "ACTIVE"] },
+        "epistemic_class": { "enum": ["DECLARED", "OBSERVED"] },
+        "kind": { "type": ["string", "null"] },
+        "media_type": { "type": ["string", "null"] },
+        "locator": { "type": ["string", "null"] },
+        "evidence_ref": { "type": "string", "minLength": 1 }
+      },
+      "required": ["identity", "state", "epistemic_class", "kind", "media_type", "locator", "evidence_ref"]
+    },
+    "surfaceIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "providers": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/provider" } }
+      },
+      "required": ["id", "providers"]
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "surface": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "epistemic_class": { "const": "OBSERVED" },
+        "observation": { "const": "runtime_witness" },
+        "assertion": { "const": "consumed_surface" },
+        "assertion_mode": { "const": "participant_attestation" },
+        "expected_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "attested_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "verification": { "const": "MATCH" },
+        "evidence_ref": { "type": "string", "minLength": 1 },
+        "observed_at": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "id", "source", "target", "surface", "status", "epistemic_class",
+        "observation", "assertion", "assertion_mode", "expected_sha256",
+        "attested_sha256", "verification", "evidence_ref", "observed_at"
+      ]
+    }
+  },
+  "required": [
+    "$schema", "schema_version", "generation", "observed_at", "epistemic_class",
+    "participants", "surfaces", "relations"
+  ]
+}

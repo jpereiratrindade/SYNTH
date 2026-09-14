@@ -10,7 +10,8 @@ ecossistema ou frontend é simulado.
 ## Construção C++26
 
 Requer um compilador com suporte ao modo C++26, CMake 3.25+,
-`nlohmann/json` 3.11+ e Linux.
+`nlohmann/json` 3.11+, OpenSSL 3.0+, GNU tar e Linux. A suíte de conformidade
+usa Python 3 com `jsonschema` apenas para validar os schemas publicados.
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -29,12 +30,58 @@ runner.
 ./build/bin/synth foundation verify
 ./build/bin/synth surfaces
 ./build/bin/synth relations
+./build/bin/synth ecosystem
+./build/bin/synth resolve synth.cli
 ./build/bin/synth evidence
 ```
 
 A saída é legível por pessoas por padrão. Acrescente `--json` para obter a
 representação computável. Cada gate informa sua classe epistemológica e a
 evidência usada para derivá-lo.
+
+## Realizações externas
+
+A primeira fatia vertical aceita artefatos `tar` publicados por uma fonte local:
+
+```bash
+SOURCE=tests/fixtures/local-source
+
+./build/bin/synth search synth-web --source "$SOURCE"
+./build/bin/synth info synth-web --source "$SOURCE"
+./build/bin/synth install synth-web --source "$SOURCE"
+./build/bin/synth installed
+
+./build/bin/synth evidence
+./build/bin/synth activate synth-web
+./build/bin/synth relations
+./build/bin/synth surfaces
+
+./build/bin/synth deactivate synth-web
+./build/bin/synth remove synth-web
+```
+
+`install` adquire um snapshot estável, verifica SHA-256 e extrai exatamente os
+mesmos bytes para o store imutável, sem ativar. `activate` fixa snapshots e
+digests das superfícies de arquivo requeridas, inicia uma candidata isolada,
+aplica um timeout real à readiness e valida integralmente seu witness antes da
+promoção. Relações só aparecem como `OBSERVED` quando a atestação do participante
+corresponde ao digest resolvido pelo SYNTH.
+
+As operações mutantes são serializadas por um lock global nesta versão;
+consultas permanecem paralelas e sem persistência.
+
+## Projeção do ecossistema
+
+`synth ecosystem --json` deriva uma fotografia versionada dos participantes
+registrados, superfícies indexadas e relações observadas. Instalações aparecem
+como `INSTALLED/DECLARED`; somente witnesses de realizações ativas produzem
+provedores `ACTIVE/OBSERVED`.
+
+`synth resolve <surface> --json` implementa descoberta tardia por capacidade e
+retorna todos os provedores ativos observados, sem conhecimento prévio de suas
+identidades. A geração da projeção é um SHA-256 da topologia e permanece estável
+enquanto os fatos projetados não mudam. A mesma projeção também integra o
+documento produzido por `synth evidence`.
 
 `synth status` descreve a realização local. A aceitação do estado no repositório
 também exige o workflow `foundation` verde no `main`.
@@ -54,14 +101,15 @@ depende do checkout usado na compilação.
 
 ```text
 $XDG_CONFIG_HOME/synth/   somente configuração declarada pelo usuário; pode não existir
+$XDG_DATA_HOME/synth/     store de artefatos imutáveis
 $XDG_STATE_HOME/synth/    evidência observacional persistente
 $XDG_RUNTIME_DIR/synth/   estado efêmero do processo
 ```
 
-`version`, `help`, `status`, `surfaces`, `relations` e `foundation verify` não
-persistem dados. Somente `evidence` cria o estado necessário e grava uma nova
-observação atômica. Na ausência de configuração humana, a evidência registra
-`configuration: null`.
+`version`, `help`, `status`, `surfaces`, `relations`, `ecosystem`, `resolve` e
+`foundation verify` não persistem dados. Somente `evidence` cria o estado
+necessário e grava uma nova observação atômica. Na ausência de configuração
+humana, a evidência registra `configuration: null`.
 
 ## Documentação normativa
 
@@ -69,6 +117,8 @@ observação atômica. Na ausência de configuração humana, a evidência regis
 - `docs/SYNTH-PATCH-FOUNDATION-001-v0.1.0.md`
 - `docs/SYNTH-FOUNDATION-CORRECTION-001-v0.1.0.md`
 - `docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md`
+- `docs/SYNTH-REALIZATION-001-v0.1.0.md`
+- `docs/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md`
 
 ## Licença
 
