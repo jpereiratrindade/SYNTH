@@ -29,7 +29,11 @@ fingerprint() {
 
 # Identity and help are pure even in a completely fresh environment.
 "$synth_bin" version | grep -Fx "SYNTH 0.1.0"
-"$synth_bin" help | grep -F "without side effects"
+help_output="$("$synth_bin" help)"
+grep -F "without side effects" <<<"$help_output"
+grep -F "search <query> --source <source> [--json]" <<<"$help_output"
+grep -F "ecosystem --watch --json" <<<"$help_output"
+grep -F "SYNTH_DATA_DIR" <<<"$help_output"
 test -z "$(find "$test_root" -mindepth 1 -print -quit)"
 
 # All queries observe without persisting or fabricating configuration.

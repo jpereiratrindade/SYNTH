@@ -381,18 +381,22 @@ witness = json.loads(witness_bytes)
 store = pathlib.Path(sys.argv[3]).resolve()
 expected_generation = sys.argv[4]
 endpoint = witness["provided_surfaces"][0]["locator"]
-with urllib.request.urlopen(endpoint + "/", timeout=2) as response:
+assert endpoint.startswith("http://127.0.0.1:")
+# The witnessed endpoint is loopback-only.  Do not let the developer's HTTP
+# proxy turn this hermetic integration check into an external request.
+local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+with local_opener.open(endpoint + "/", timeout=2) as response:
     body = response.read()
     assert b"Observed surfaces" in body
     assert b"Ecosystem" in body
-with urllib.request.urlopen(endpoint + "/api/state", timeout=2) as response:
+with local_opener.open(endpoint + "/api/state", timeout=2) as response:
     state = json.load(response)
 assert state["identity"] == "SYNTH"
 assert next(item for item in state["ecosystem"]["participants"] if item["identity"] == "synth-web")["state"] == "INSTALLED"
 deadline = time.monotonic() + 5
 ecosystem = None
 while time.monotonic() < deadline:
-    with urllib.request.urlopen(endpoint + "/api/ecosystem", timeout=2) as response:
+    with local_opener.open(endpoint + "/api/ecosystem", timeout=2) as response:
         ecosystem = json.load(response)
     if ecosystem.get("generation") == expected_generation:
         break
@@ -403,7 +407,7 @@ provider = next(
     for item in surface["providers"] if item["identity"] == "synth-web"
 )
 assert provider["state"] == "ACTIVE"
-with urllib.request.urlopen(endpoint + "/api/meta", timeout=2) as response:
+with local_opener.open(endpoint + "/api/meta", timeout=2) as response:
     meta = json.load(response)
 assert meta["is_live"] is True
 assert meta["ecosystem_generation"] == expected_generation
@@ -451,9 +455,11 @@ resolution = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert [provider["identity"] for provider in resolution["providers"]] == ["context-web", "synth-web"]
 witness = json.loads(pathlib.Path(sys.argv[2]).read_text())
 endpoint = witness["provided_surfaces"][0]["locator"]
+assert endpoint.startswith("http://127.0.0.1:")
+local_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 deadline = time.monotonic() + 5
 while time.monotonic() < deadline:
-    with urllib.request.urlopen(endpoint + "/api/ecosystem", timeout=2) as response:
+    with local_opener.open(endpoint + "/api/ecosystem", timeout=2) as response:
         ecosystem = json.load(response)
     surface = next(item for item in ecosystem["surfaces"] if item["id"] == "interface.human.web.v1")
     identities = [item["identity"] for item in surface["providers"] if item["state"] == "ACTIVE"]
