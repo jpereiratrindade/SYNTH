@@ -7,17 +7,22 @@
   "artifact": {
     "path": "artifacts/synth-web-0.1.0.tar",
     "media_type": "application/x-tar",
-    "sha256": "5e6778d28fe46170c94f64f0e9648e686118ce6068e74323acf1eed8164720f7"
+    "sha256": "545e47e043a52a55256ac0b501fdaf26677eba4fd7c3e25cd85bc00161cf7557"
   },
   "provenance": {
     "source": "SYNTH-WEB",
-    "revision": "e68fd26",
+    "revision": "e1bfd5d",
     "license": "GPL-3.0-only"
   },
   "provides": {
     "surfaces": [
       {
         "id": "synth-web.http",
+        "kind": "http",
+        "media_type": "text/html"
+      },
+      {
+        "id": "interface.human.web.v1",
         "kind": "http",
         "media_type": "text/html"
       }
@@ -38,7 +43,8 @@
     "environment_allowed": [
       "SYNTH_REALIZATION_ID",
       "SYNTH_WITNESS_PATH",
-      "SYNTH_RESOLVED_SURFACES_PATH"
+      "SYNTH_RESOLVED_SURFACES_PATH",
+      "SYNTH_ECOSYSTEM_STREAM"
     ]
   },
   "readiness": {

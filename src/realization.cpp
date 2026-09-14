@@ -31,6 +31,14 @@ namespace {
 
 constexpr std::string_view manifest_schema = "urn:synth:schema:artifact-manifest:0.1.0";
 constexpr std::string_view witness_schema = "urn:synth:schema:realization-witness:0.1.0";
+constexpr std::string_view human_web_surface = "interface.human.web.v1";
+
+void validate_semantic_surface_contract(const json& surface) {
+  if (surface.value("id", "") != human_web_surface) return;
+  if (surface.value("kind", "") != "http" || surface.value("media_type", "") != "text/html") {
+    throw std::runtime_error("interface.human.web.v1 requires kind=http and media_type=text/html");
+  }
+}
 
 class OperationFailure : public std::runtime_error {
  public:
@@ -64,6 +72,13 @@ std::string timestamp() {
 std::string operation_id(std::string_view prefix) {
   const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
   return std::string(prefix) + "-" + std::to_string(::getpid()) + "-" + std::to_string(ticks);
+}
+
+fs::path current_executable() {
+  std::array<char, 4096> buffer{};
+  const auto size = ::readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
+  if (size < 0) throw std::runtime_error("cannot resolve current SYNTH executable");
+  return fs::path(std::string(buffer.data(), static_cast<std::size_t>(size)));
 }
 
 void ensure_directory(const fs::path& path) {
@@ -249,6 +264,7 @@ void validate_surface_declaration(const json& surface) {
       throw std::runtime_error(std::string("surface declaration has invalid ") + field);
     }
   }
+  validate_semantic_surface_contract(surface);
 }
 
 void validate_manifest(const json& manifest) {
@@ -292,7 +308,8 @@ void validate_manifest(const json& manifest) {
     if (!valid_relative_path(realization.value("entrypoint", "")) || !realization.at("arguments").is_array() ||
         !realization.at("environment_allowed").is_array()) throw std::runtime_error("realization declaration is invalid");
     const std::set<std::string> supported_environment{
-      "SYNTH_REALIZATION_ID", "SYNTH_WITNESS_PATH", "SYNTH_RESOLVED_SURFACES_PATH"
+      "SYNTH_REALIZATION_ID", "SYNTH_WITNESS_PATH", "SYNTH_RESOLVED_SURFACES_PATH",
+      "SYNTH_ECOSYSTEM_STREAM"
     };
     require_string_array(realization.at("arguments"), "realization.arguments");
     std::set<std::string> requested_environment;
@@ -646,11 +663,25 @@ fs::path payload_entry(const json& installation, std::string_view relative) {
 }
 
 std::vector<std::string> candidate_environment(const json& manifest, std::string_view realization_id,
-                                                const fs::path& witness_path, const fs::path& resolved_path) {
+                                                const fs::path& witness_path, const fs::path& resolved_path,
+                                                const Roots& roots) {
+  const json ecosystem_stream{
+    {"$schema", "urn:synth:capability:ecosystem-stream:0.1.0"},
+    {"surface", "synth.ecosystem.stream.v1"},
+    {"media_type", "application/x-ndjson"},
+    {"argv", json::array({current_executable().string(), "ecosystem", "--watch", "--json"})},
+    {"environment", {
+      {"XDG_DATA_HOME", roots.data.parent_path().string()},
+      {"XDG_STATE_HOME", roots.state.parent_path().string()},
+      {"XDG_RUNTIME_DIR", roots.runtime.parent_path().string()},
+      {"SYNTH_DATA_DIR", roots.resources.string()}
+    }}
+  };
   const std::map<std::string, std::string> available{
     {"SYNTH_REALIZATION_ID", std::string(realization_id)},
     {"SYNTH_WITNESS_PATH", witness_path.string()},
-    {"SYNTH_RESOLVED_SURFACES_PATH", resolved_path.string()}
+    {"SYNTH_RESOLVED_SURFACES_PATH", resolved_path.string()},
+    {"SYNTH_ECOSYSTEM_STREAM", ecosystem_stream.dump()}
   };
   std::vector<std::string> environment{"PATH=/usr/bin:/bin", "LANG=C.UTF-8", "PYTHONDONTWRITEBYTECODE=1"};
   for (const auto& declared : manifest.at("realization").at("environment_allowed")) {
@@ -796,6 +827,7 @@ void validate_observed_surface(const json& surface) {
   if (surface.at("observability") != "runtime-witness") {
     throw std::runtime_error("provided surface observability is invalid");
   }
+  validate_semantic_surface_contract(surface);
 }
 
 void validate_consumed_surface(const json& surface) {
@@ -940,7 +972,7 @@ int activate_command(const std::vector<std::string>& args, bool as_json, const R
   const auto preserved_witness = realization_state / ("witness-" + realization_id + ".json");
   ensure_directory(candidate);
   write_json_atomic(resolved_path, {{"epistemic_class", "RESOLVED"}, {"surfaces", resolved}});
-  const auto environment = candidate_environment(manifest, realization_id, witness_path, resolved_path);
+  const auto environment = candidate_environment(manifest, realization_id, witness_path, resolved_path, roots);
   const auto executable = payload_entry(installation, manifest.at("realization").at("entrypoint").get<std::string>());
   const auto readiness_executable = payload_entry(installation, manifest.at("readiness").at("entrypoint").get<std::string>());
   const auto arguments = manifest.at("realization").at("arguments").get<std::vector<std::string>>();

@@ -124,6 +124,21 @@ grep -F "unexpected field" "$test_root/strict-manifest.log" >/dev/null
 test ! -e "$XDG_STATE_HOME/synth/installations/synth-web.json"
 echo "MANIFEST_SCHEMA_RUNTIME_ENFORCED  PASS"
 
+invalid_human_surface_source="$test_root/invalid-human-surface-source"
+cp -a "$fixture_source" "$invalid_human_surface_source"
+python3 - "$invalid_human_surface_source/manifests/synth-web.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+surface = next(item for item in value["provides"]["surfaces"] if item["id"] == "interface.human.web.v1")
+surface["kind"] = "socket"
+path.write_text(json.dumps(value), encoding="utf-8")
+PY
+use_scenario invalid-human-surface
+expect_failure "$test_root/invalid-human-surface.log" "$synth_bin" install synth-web --source "$invalid_human_surface_source"
+grep -F "interface.human.web.v1 requires" "$test_root/invalid-human-surface.log" >/dev/null
+echo "SEMANTIC_HUMAN_CONTRACT          PASS"
+
 bad_digest_source="$test_root/bad-digest-source"
 cp -a "$fixture_source" "$bad_digest_source"
 python3 - "$bad_digest_source/manifests/synth-web.json" <<'PY'
@@ -251,6 +266,9 @@ validator_for(schema)(schema, format_checker=None).validate(witness)
 assert witness["identity"] == "synth-web"
 assert witness["readiness"]["status"] == "READY"
 assert any(item["id"] == "synth.evidence" for item in witness["consumed_surfaces"])
+assert {item["id"] for item in witness["provided_surfaces"]} == {
+    "synth-web.http", "interface.human.web.v1"
+}
 PY
 python3 - "$active" "$witness" <<'PY'
 import hashlib, json, pathlib, sys
@@ -287,9 +305,16 @@ provider = next(item for item in surface["providers"] if item["identity"] == "sy
 assert provider["state"] == "ACTIVE"
 assert provider["epistemic_class"] == "OBSERVED"
 assert provider["locator"].startswith("http://127.0.0.1:")
+semantic = next(item for item in value["surfaces"] if item["id"] == "interface.human.web.v1")
+semantic_provider = next(item for item in semantic["providers"] if item["identity"] == "synth-web")
+assert semantic_provider["state"] == "ACTIVE"
+assert semantic_provider["epistemic_class"] == "OBSERVED"
+assert semantic_provider["kind"] == "http"
+assert semantic_provider["media_type"] == "text/html"
 assert len(value["relations"]) == 1
 PY
 "$synth_bin" resolve synth-web.http --json | grep -F '"identity":"synth-web"' >/dev/null
+"$synth_bin" resolve interface.human.web.v1 --json | grep -F '"identity":"synth-web"' >/dev/null
 python3 - "$source_root/schemas/relation.schema.json" "$test_root/relations.json" <<'PY'
 import json, pathlib, sys
 from jsonschema.validators import validator_for
@@ -306,21 +331,101 @@ echo "OBSERVED_RELATION_GROUNDED        PASS"
 echo "LATE_BOUND_SURFACE_DISCOVERY      PASS"
 
 # The promoted participant runs from the immutable store and serves the public
-# evidence it consumed, without either source checkout.
-python3 - "$witness" "$store_path" <<'PY'
-import json, pathlib, sys, urllib.request
-witness = json.loads(pathlib.Path(sys.argv[1]).read_text())
-store = pathlib.Path(sys.argv[2]).resolve()
+# pinned evidence it consumed plus a separate live ecosystem, without either
+# source checkout. Neither the snapshot nor the promotion witness is rewritten.
+python3 - "$active" "$witness" "$store_path" "$active_generation" <<'PY'
+import hashlib, json, pathlib, sys, time, urllib.request
+active = json.loads(pathlib.Path(sys.argv[1]).read_text())
+witness_path = pathlib.Path(sys.argv[2])
+witness_bytes = witness_path.read_bytes()
+witness = json.loads(witness_bytes)
+store = pathlib.Path(sys.argv[3]).resolve()
+expected_generation = sys.argv[4]
 endpoint = witness["provided_surfaces"][0]["locator"]
 with urllib.request.urlopen(endpoint + "/", timeout=2) as response:
-    assert b"Observed surfaces" in response.read()
+    body = response.read()
+    assert b"Observed surfaces" in body
+    assert b"Ecosystem" in body
 with urllib.request.urlopen(endpoint + "/api/state", timeout=2) as response:
     state = json.load(response)
 assert state["identity"] == "SYNTH"
+assert next(item for item in state["ecosystem"]["participants"] if item["identity"] == "synth-web")["state"] == "INSTALLED"
+deadline = time.monotonic() + 5
+ecosystem = None
+while time.monotonic() < deadline:
+    with urllib.request.urlopen(endpoint + "/api/ecosystem", timeout=2) as response:
+        ecosystem = json.load(response)
+    if ecosystem.get("generation") == expected_generation:
+        break
+    time.sleep(0.05)
+assert ecosystem is not None and ecosystem["generation"] == expected_generation
+provider = next(
+    item for surface in ecosystem["surfaces"] if surface["id"] == "interface.human.web.v1"
+    for item in surface["providers"] if item["identity"] == "synth-web"
+)
+assert provider["state"] == "ACTIVE"
+with urllib.request.urlopen(endpoint + "/api/meta", timeout=2) as response:
+    meta = json.load(response)
+assert meta["is_live"] is True
+assert meta["ecosystem_generation"] == expected_generation
+snapshot = pathlib.Path(active["resolved_surfaces"][0]["locator"])
+assert hashlib.sha256(snapshot.read_bytes()).hexdigest() == active["resolved_surfaces"][0]["expected_sha256"]
+assert witness_path.read_bytes() == witness_bytes
+assert hashlib.sha256(witness_bytes).hexdigest() == active["witness_sha256"]
 process = pathlib.Path(f"/proc/{witness['process']['pid']}/cmdline").read_bytes().decode(errors="replace")
 assert str(store) in process
 PY
 echo "SYNTH_WEB_INDEPENDENT_RUNTIME     PASS"
+echo "LIVE_ECOSYSTEM_SEPARATE           PASS"
+echo "IMMUTABLE_PROMOTION_WITNESS       PASS"
+
+# A second independently witnessed participant may publish the same semantic
+# surface. Public discovery remains plural and deterministic.
+plural_source="$test_root/plural-source"
+cp -a "$fixture_source" "$plural_source"
+plural_payload="$test_root/plural-payload"
+mkdir -p "$plural_payload"
+tar --extract --file "$artifact" --directory "$plural_payload"
+sed -i 's/IDENTITY = "synth-web"/IDENTITY = "context-web"/' "$plural_payload/bin/synth-web"
+sed -i 's/synth-web.http/context-web.http/g' "$plural_payload/bin/synth-web" "$plural_payload/bin/readiness"
+tar --create --file "$plural_source/artifacts/context-web-0.1.0.tar" --directory "$plural_payload" .
+plural_digest="$(sha256sum "$plural_source/artifacts/context-web-0.1.0.tar" | cut -d' ' -f1)"
+python3 - "$plural_source/manifests/synth-web.json" "$plural_source/manifests/context-web.json" "$plural_digest" <<'PY'
+import json, pathlib, sys
+source, target, digest = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+value = json.loads(source.read_text())
+value["identity"] = "context-web"
+value["description"] = "second factual human interface fixture"
+value["artifact"]["path"] = "artifacts/context-web-0.1.0.tar"
+value["artifact"]["sha256"] = digest
+value["provenance"]["source"] = "CONTEXT-WEB-TEST"
+value["provenance"]["revision"] = "generated-fixture"
+value["provides"]["surfaces"][0]["id"] = "context-web.http"
+target.write_text(json.dumps(value), encoding="utf-8")
+PY
+"$synth_bin" install context-web --source "$plural_source" >/dev/null
+"$synth_bin" activate context-web >/dev/null
+"$synth_bin" resolve interface.human.web.v1 --json >"$test_root/plural-resolution.json"
+python3 - "$test_root/plural-resolution.json" "$witness" <<'PY'
+import json, pathlib, sys, time, urllib.request
+resolution = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert [provider["identity"] for provider in resolution["providers"]] == ["context-web", "synth-web"]
+witness = json.loads(pathlib.Path(sys.argv[2]).read_text())
+endpoint = witness["provided_surfaces"][0]["locator"]
+deadline = time.monotonic() + 5
+while time.monotonic() < deadline:
+    with urllib.request.urlopen(endpoint + "/api/ecosystem", timeout=2) as response:
+        ecosystem = json.load(response)
+    surface = next(item for item in ecosystem["surfaces"] if item["id"] == "interface.human.web.v1")
+    identities = [item["identity"] for item in surface["providers"] if item["state"] == "ACTIVE"]
+    if identities == ["context-web", "synth-web"]:
+        break
+    time.sleep(0.05)
+assert identities == ["context-web", "synth-web"]
+PY
+"$synth_bin" deactivate context-web >/dev/null
+"$synth_bin" remove context-web >/dev/null
+echo "MULTIPLE_PROVIDER_DISCOVERY       PASS"
 
 # Every query remains pure even while a participant is active.
 pure_before="$(fingerprint "$scenario_root")"

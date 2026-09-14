@@ -52,7 +52,21 @@
         "observability": { "const": "runtime-witness" },
         "metadata": { "type": "string", "minLength": 1 }
       },
-      "required": ["id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"]
+      "required": ["id", "owner", "kind", "locator", "direction", "media_type", "observability", "metadata"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "id": { "const": "interface.human.web.v1" } },
+            "required": ["id"]
+          },
+          "then": {
+            "properties": {
+              "kind": { "const": "http" },
+              "media_type": { "const": "text/html" }
+            }
+          }
+        }
+      ]
     },
     "consumedSurface": {
       "type": "object",

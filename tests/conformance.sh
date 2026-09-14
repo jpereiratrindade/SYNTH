@@ -5,7 +5,15 @@ synth_bin="$1"
 source_root="$2"
 build_root="$3"
 test_root="$(mktemp -d)"
-trap 'rm -rf "$test_root"' EXIT
+watch_pid=""
+cleanup() {
+  if test -n "$watch_pid"; then
+    kill "$watch_pid" 2>/dev/null || true
+    wait "$watch_pid" 2>/dev/null || true
+  fi
+  rm -rf "$test_root"
+}
+trap cleanup EXIT
 
 export XDG_CONFIG_HOME="$test_root/config"
 export XDG_DATA_HOME="$test_root/data"
@@ -41,16 +49,53 @@ fi
 "$synth_bin" relations | grep -Fx "No relations observed."
 "$synth_bin" ecosystem --json | grep -F '"identity":"SYNTH"'
 "$synth_bin" ecosystem --json | grep -F '"id":"synth.cli"'
+"$synth_bin" ecosystem --json | grep -F '"id":"synth.ecosystem.stream.v1"'
 "$synth_bin" resolve synth.cli --json | grep -F '"epistemic_class":"OBSERVED"'
+"$synth_bin" resolve synth.ecosystem.stream.v1 --json | grep -F '"media_type":"application/x-ndjson"'
 "$synth_bin" status --json | grep -F '"ECOSYSTEM_SYNTH":"PROJECTED"'
 test -z "$(find "$test_root" -mindepth 1 -print -quit)"
 
 # Only the evidence command creates persistent/ephemeral state.
+watch_output="$test_root/ecosystem.ndjson"
+"$synth_bin" ecosystem --watch --json >"$watch_output" &
+watch_pid=$!
+for _ in $(seq 1 50); do
+  test "$(wc -l <"$watch_output")" -ge 1 && break
+  sleep 0.05
+done
+test "$(wc -l <"$watch_output")" -eq 1
+sleep 0.5
+test "$(wc -l <"$watch_output")" -eq 1
 "$synth_bin" evidence --json | grep -F '"epistemic_class": "OBSERVED"'
 "$synth_bin" evidence --json | grep -F '"rss_kib"'
 "$synth_bin" evidence --json | grep -F '"max_rss_kib"'
 "$synth_bin" evidence --json | grep -F '"configuration": null'
 "$synth_bin" evidence --json | grep -F '"ecosystem": {'
+for _ in $(seq 1 50); do
+  test "$(wc -l <"$watch_output")" -ge 2 && break
+  sleep 0.05
+done
+kill "$watch_pid"
+wait "$watch_pid"
+watch_pid=""
+python3 - "$source_root/schemas/ecosystem-projection.schema.json" "$watch_output" <<'PY'
+import json
+import pathlib
+import sys
+
+from jsonschema.validators import validator_for
+
+schema = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+projections = [json.loads(line) for line in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()]
+assert len(projections) == 2
+validator = validator_for(schema)(schema)
+for projection in projections:
+    validator.validate(projection)
+assert projections[0]["generation"] != projections[1]["generation"]
+assert not any(item["id"] == "synth.evidence" for item in projections[0]["surfaces"])
+assert any(item["id"] == "synth.evidence" for item in projections[1]["surfaces"])
+PY
+echo "LIVE_ECOSYSTEM_NDJSON            PASS"
 test ! -e "$XDG_CONFIG_HOME/synth"
 test -f "$XDG_STATE_HOME/synth/evidence/latest.json"
 test -d "$XDG_RUNTIME_DIR/synth"
@@ -116,6 +161,7 @@ test -x "$installed_synth"
 test -f "$install_root/share/synth/SYNTH-FOUNDATION-001-v0.4.0.md"
 test -f "$install_root/share/synth/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md"
 test -f "$install_root/share/synth/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md"
+test -f "$install_root/share/synth/SYNTH-LIVE-ECOSYSTEM-001-v0.1.0.md"
 test -f "$install_root/share/synth/schemas/relation.schema.json"
 test -f "$install_root/share/synth/schemas/ecosystem-projection.schema.json"
 if strings "$installed_synth" | grep -F "$source_root"; then

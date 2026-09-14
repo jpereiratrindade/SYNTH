@@ -41,7 +41,7 @@
         "environment_allowed": {
           "type": "array",
           "items": {
-            "enum": ["SYNTH_REALIZATION_ID", "SYNTH_WITNESS_PATH", "SYNTH_RESOLVED_SURFACES_PATH"]
+            "enum": ["SYNTH_REALIZATION_ID", "SYNTH_WITNESS_PATH", "SYNTH_RESOLVED_SURFACES_PATH", "SYNTH_ECOSYSTEM_STREAM"]
           },
           "uniqueItems": true
         }
@@ -76,7 +76,22 @@
         "kind": { "type": "string", "minLength": 1 },
         "media_type": { "type": "string", "minLength": 1 }
       },
-      "required": ["id"]
+      "required": ["id"],
+      "allOf": [
+        {
+          "if": {
+            "properties": { "id": { "const": "interface.human.web.v1" } },
+            "required": ["id"]
+          },
+          "then": {
+            "properties": {
+              "kind": { "const": "http" },
+              "media_type": { "const": "text/html" }
+            },
+            "required": ["kind", "media_type"]
+          }
+        }
+      ]
     },
     "surfaceSet": {
       "type": "object",

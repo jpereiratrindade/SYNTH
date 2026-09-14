@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <sys/resource.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -34,6 +36,11 @@ constexpr std::string_view identity = "SYNTH";
 constexpr std::string_view version = SYNTH_VERSION;
 constexpr std::string_view json_schema_dialect = "https://json-schema.org/draft/2020-12/schema";
 const auto process_started = Clock::now();
+volatile std::sig_atomic_t ecosystem_watch_running = 1;
+
+extern "C" void stop_ecosystem_watch(int) {
+  ecosystem_watch_running = 0;
+}
 
 std::string env_or(std::string_view key, std::string fallback) {
   if (const char* value = std::getenv(std::string(key).c_str()); value && *value) return value;
@@ -117,7 +124,10 @@ json surface_json(const Surface& surface) {
 }
 
 std::vector<Surface> observed_surfaces(const Paths& paths, const fs::path& resources, bool evidence_will_be_persisted = false) {
-  std::vector<Surface> result{{"synth.cli", "SYNTH", "process-stream", "stdio://synth", "bidirectional", "text/plain", "self-observed", "human and JSON representations"}};
+  std::vector<Surface> result{
+    {"synth.cli", "SYNTH", "process-stream", "stdio://synth", "bidirectional", "text/plain", "self-observed", "human and JSON representations"},
+    {"synth.ecosystem.stream.v1", "SYNTH", "process-stream", "stdio://synth/ecosystem?watch=1", "outbound", "application/x-ndjson", "self-observed", "content-derived stream of factual ecosystem projections"}
+  };
   const auto evidence = paths.state / "evidence/latest.json";
   if (evidence_will_be_persisted || fs::is_regular_file(evidence)) {
     result.push_back({"synth.evidence", "SYNTH", "file", evidence.string(), "outbound", "application/json", "self-observed", "atomic latest evidence document"});
@@ -557,6 +567,28 @@ void print_ecosystem(const Paths& paths, const fs::path& resources, const bool a
   }
 }
 
+void watch_ecosystem(const Paths& paths, const fs::path& resources) {
+  ecosystem_watch_running = 1;
+  struct sigaction action{};
+  action.sa_handler = stop_ecosystem_watch;
+  sigemptyset(&action.sa_mask);
+  action.sa_flags = 0;
+  if (::sigaction(SIGINT, &action, nullptr) != 0 || ::sigaction(SIGTERM, &action, nullptr) != 0) {
+    throw std::runtime_error("cannot install ecosystem watch signal handlers");
+  }
+
+  std::optional<std::string> previous_generation;
+  while (ecosystem_watch_running != 0) {
+    const auto projection = ecosystem_projection(paths, resources);
+    const auto generation = projection.at("generation").get<std::string>();
+    if (!previous_generation || *previous_generation != generation) {
+      std::cout << projection.dump() << '\n' << std::flush;
+      previous_generation = generation;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+}
+
 void print_resolution(const std::vector<std::string>& args, const Paths& paths,
                       const fs::path& resources, const bool as_json) {
   if (args.size() != 2) throw std::runtime_error("usage: synth resolve <surface>");
@@ -592,13 +624,13 @@ void print_resolution(const std::vector<std::string>& args, const Paths& paths,
 
 void print_help() {
   std::cout << "SYNTH — always ready, always incomplete\n\n"
-            << "Usage: synth <command> [--json]\n\n"
+            << "Usage: synth <command> [--json] [--watch]\n\n"
             << "  version             Show system identity and version without side effects\n"
             << "  status              Observe present local readiness without persistence\n"
             << "  foundation verify   Observe and derive foundational gates\n"
             << "  surfaces            List only observed SYNTH surfaces\n"
             << "  relations           List observed relations\n"
-            << "  ecosystem           Project registered and active ecosystem state\n"
+            << "  ecosystem           Project state; --watch --json streams changes as NDJSON\n"
             << "  resolve              Discover active providers by surface\n"
             << "  evidence            Observe this process and persist evidence\n";
   std::cout << "  search               Search a local artifact source\n"
@@ -616,9 +648,11 @@ int main(int argc, char** argv) {
   using namespace synth;
   try {
     bool as_json = false;
+    bool watch = false;
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i) {
       if (std::string_view(argv[i]) == "--json") as_json = true;
+      else if (std::string_view(argv[i]) == "--watch") watch = true;
       else args.emplace_back(argv[i]);
     }
 
@@ -632,6 +666,9 @@ int main(int argc, char** argv) {
     if (!known_command) {
       std::cerr << "Unknown command: " << args[0] << "\nEvidence: run 'synth help' for valid commands.\n";
       return 2;
+    }
+    if (watch && (args[0] != "ecosystem" || !as_json)) {
+      throw std::runtime_error("--watch requires: synth ecosystem --watch --json");
     }
 
     const auto paths = xdg_paths();
@@ -649,7 +686,8 @@ int main(int argc, char** argv) {
     if (args[0] == "relations") { print_relations(paths, data, as_json); return 0; }
     if (args[0] == "ecosystem") {
       if (args.size() != 1) throw std::runtime_error("usage: synth ecosystem");
-      print_ecosystem(paths, data, as_json);
+      if (watch) watch_ecosystem(paths, data);
+      else print_ecosystem(paths, data, as_json);
       return 0;
     }
     if (args[0] == "resolve") { print_resolution(args, paths, data, as_json); return 0; }
