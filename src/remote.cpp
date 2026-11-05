@@ -1,6 +1,7 @@
 #include "remote.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -10,6 +11,10 @@
 #include <stdexcept>
 #include <string_view>
 #include <unistd.h>
+
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/sha.h>
 
 #include <jsoncons/json.hpp>
 #include <jsoncons_ext/jsonschema/jsonschema.hpp>
@@ -72,6 +77,75 @@ bool safe_identity(std::string_view value) {
   });
 }
 
+std::string hex(const unsigned char* data, std::size_t size) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string result(size * 2, '0');
+  for (std::size_t i = 0; i < size; ++i) {
+    result[i * 2] = digits[data[i] >> 4U];
+    result[i * 2 + 1] = digits[data[i] & 0x0fU];
+  }
+  return result;
+}
+
+std::vector<unsigned char> decode_base64(std::string value) {
+  value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char c) { return std::isspace(c) != 0; }), value.end());
+  if (value.empty() || value.size() % 4 != 0) throw std::runtime_error("invalid signature encoding");
+  std::vector<unsigned char> decoded(value.size() * 3 / 4);
+  const int count = EVP_DecodeBlock(decoded.data(), reinterpret_cast<const unsigned char*>(value.data()), static_cast<int>(value.size()));
+  if (count < 0) throw std::runtime_error("invalid signature encoding");
+  std::size_t size = static_cast<std::size_t>(count);
+  if (value.ends_with("==")) size -= 2;
+  else if (value.ends_with("=")) size -= 1;
+  decoded.resize(size);
+  return decoded;
+}
+
+void verify_signed_identity(const json& registration, const json& observation) {
+  if (registration.value("identity_assurance", "") != "VERIFIED") return;
+  const auto& statement = observation.at("identity_statement");
+  if (statement.at("identity") != registration.at("identity") ||
+      statement.at("version") != registration.at("version") ||
+      statement.at("endpoint") != registration.at("endpoint") ||
+      statement.value("expires_at", "") < timestamp() ||
+      observation.value("expires_at", "") > statement.value("expires_at", "")) {
+    throw std::runtime_error("signed identity statement does not match registration or is expired");
+  }
+
+  const auto pem = registration.at("public_key_pem").get<std::string>();
+  BIO* bio = BIO_new_mem_buf(pem.data(), static_cast<int>(pem.size()));
+  if (!bio) throw std::runtime_error("cannot read identity public key");
+  EVP_PKEY* key = PEM_read_bio_PUBKEY(bio, nullptr, nullptr, nullptr);
+  BIO_free(bio);
+  if (!key || EVP_PKEY_id(key) != EVP_PKEY_ED25519) {
+    EVP_PKEY_free(key);
+    throw std::runtime_error("identity public key is not Ed25519");
+  }
+
+  unsigned char* der = nullptr;
+  const int der_size = i2d_PUBKEY(key, &der);
+  if (der_size <= 0) {
+    EVP_PKEY_free(key);
+    throw std::runtime_error("cannot encode identity public key");
+  }
+  unsigned char digest[SHA256_DIGEST_LENGTH];
+  SHA256(der, static_cast<std::size_t>(der_size), digest);
+  CRYPTO_free(der, nullptr, 0);
+  if (registration.at("public_key_fingerprint") != "sha256:" + hex(digest, sizeof digest)) {
+    EVP_PKEY_free(key);
+    throw std::runtime_error("identity public key fingerprint mismatch");
+  }
+
+  const auto signature = decode_base64(observation.at("signature_base64").get<std::string>());
+  const auto payload = statement.dump();
+  EVP_MD_CTX* context = EVP_MD_CTX_new();
+  const bool valid = context && EVP_DigestVerifyInit(context, nullptr, nullptr, nullptr, key) == 1 &&
+      EVP_DigestVerify(context, signature.data(), signature.size(),
+                       reinterpret_cast<const unsigned char*>(payload.data()), payload.size()) == 1;
+  EVP_MD_CTX_free(context);
+  EVP_PKEY_free(key);
+  if (!valid) throw std::runtime_error("signed identity statement signature invalid");
+}
+
 int register_command(const std::vector<std::string>& args, bool as_json, const Roots& roots) {
   if (args.size() != 3) throw std::runtime_error("usage: synth remote register <manifest.json>");
   auto manifest = read_json(args[2]);
@@ -95,9 +169,11 @@ int attest_command(const std::vector<std::string>& args, bool as_json, const Roo
   if (!fs::is_regular_file(registration_path)) throw std::runtime_error("remote identity is not registered: " + identity);
   const auto registration = read_json(registration_path);
   if (observation.at("endpoint") != registration.at("endpoint") ||
-      observation.at("identity_assurance") != registration.at("identity_assurance")) {
+      observation.at("identity_assurance") != registration.at("identity_assurance") ||
+      observation.at("verification_method") != registration.at("verification_method")) {
     throw std::runtime_error("observation does not match remote registration");
   }
+  verify_signed_identity(registration, observation);
   const auto target = observations(roots) / (identity + ".json");
   write_json_atomic(target, observation);
   if (as_json) std::cout << json{{"status", observation.at("availability")}, {"identity", identity}, {"record", target.string()}}.dump() << '\n';
@@ -123,7 +199,9 @@ std::optional<json> valid_observation(const Roots& roots, const json& registrati
     validate(roots.resources / "schemas/remote-observation.schema.json", observation, "remote observation");
     if (observation.at("endpoint") != registration.at("endpoint") ||
         observation.at("identity_assurance") != registration.at("identity_assurance") ||
+        observation.at("verification_method") != registration.at("verification_method") ||
         observation.value("expires_at", "") < timestamp()) return std::nullopt;
+    verify_signed_identity(registration, observation);
     return std::optional<json>{observation};
   } catch (...) { return std::nullopt; }
 }

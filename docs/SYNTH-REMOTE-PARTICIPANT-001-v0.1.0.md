@@ -21,8 +21,21 @@ sustenta disponibilidade. O observador pode atestar `AVAILABLE` ou
 `UNAVAILABLE`; sua atestação não eleva garantia de identidade.
 
 `identity_assurance=UNVERIFIED` significa que houve somente verificação fraca,
-como marcador textual em HTTP. `VERIFIED` fica reservado a contrato futuro com
-prova criptográfica. A projeção deve preservar essa distinção.
+como marcador textual em HTTP. `VERIFIED` exige o contrato criptográfico 0.2.0
+descrito abaixo. A projeção deve preservar essa distinção.
+
+## Extensão 0.2.0 — identidade remota assinada
+
+O registro pode declarar `VERIFIED/ed25519-signed-manifest-v1` somente quando
+fixa uma chave pública Ed25519 e seu fingerprint SHA-256. Cada observação deve
+carregar uma declaração assinada contendo exatamente identidade, versão,
+endpoint, emissão e expiração. O SYNTH verifica a assinatura, o fingerprint,
+a correspondência com o registro e a validade antes de persistir a atestação.
+
+Alteração de qualquer campo, chave divergente ou prova expirada é rejeitada.
+Disponibilidade continua sendo uma dimensão separada: assinatura válida não
+implica que o endpoint esteja disponível, e resposta HTTP sem assinatura não
+eleva a garantia para `VERIFIED`.
 
 ## CLI experimental
 
