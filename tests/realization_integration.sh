@@ -287,7 +287,7 @@ test "$installed_generation" != "$evidence_generation"
 python3 - "$XDG_STATE_HOME/synth/evidence/latest.json" <<'PY'
 import json, pathlib, sys
 value = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert value["ecosystem"]["$schema"] == "urn:synth:schema:ecosystem-projection:0.1.0"
+assert value["ecosystem"]["$schema"] == "urn:synth:schema:ecosystem-projection:0.2.0"
 assert any(item["id"] == "synth.evidence" for item in value["ecosystem"]["surfaces"])
 PY
 echo "EVIDENCE_EMBEDS_ECOSYSTEM         PASS"

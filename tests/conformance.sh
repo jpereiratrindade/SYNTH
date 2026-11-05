@@ -34,6 +34,7 @@ grep -F "without side effects" <<<"$help_output"
 grep -F "search <query> --source <source> [--json]" <<<"$help_output"
 grep -F "ecosystem --watch --json" <<<"$help_output"
 grep -F "SYNTH_DATA_DIR" <<<"$help_output"
+test "$("$synth_bin" remote list --json)" = "[]"
 test -z "$(find "$test_root" -mindepth 1 -print -quit)"
 
 # All queries observe without persisting or fabricating configuration.
@@ -117,6 +118,7 @@ evidence_before="$(sha256sum "$XDG_STATE_HOME/synth/evidence/latest.json")"
 "$synth_bin" ecosystem >/dev/null
 "$synth_bin" ecosystem --json >/dev/null
 "$synth_bin" resolve synth.cli --json >/dev/null
+"$synth_bin" remote list --json >/dev/null
 read_only_after="$(fingerprint)"
 evidence_after_queries="$(sha256sum "$XDG_STATE_HOME/synth/evidence/latest.json")"
 test "$read_only_before" = "$read_only_after"

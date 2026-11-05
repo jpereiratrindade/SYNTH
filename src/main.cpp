@@ -25,6 +25,7 @@
 #include <openssl/evp.h>
 
 #include "realization.hpp"
+#include "remote.hpp"
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
@@ -139,6 +140,13 @@ std::vector<Surface> observed_surfaces(const Paths& paths, const fs::path& resou
       surface.value("observability", ""), surface.value("metadata", "")
     });
   }
+  for (const auto& surface : remote::available_surfaces(realization_roots(paths, resources))) {
+    result.push_back({
+      surface.value("id", ""), surface.value("owner", ""), surface.value("kind", ""),
+      surface.value("locator", ""), surface.value("direction", ""), surface.value("media_type", ""),
+      surface.value("observability", ""), surface.value("metadata", "")
+    });
+  }
   return result;
 }
 
@@ -175,6 +183,9 @@ json ecosystem_projection(const Paths& paths, const fs::path& resources,
   }
 
   json participants = realization::ecosystem_participants(realization_roots(paths, resources));
+  for (auto& participant : remote::participants(realization_roots(paths, resources))) {
+    participants.push_back(std::move(participant));
+  }
   const json core_participant{
     {"identity", identity}, {"version", version}, {"description", "SYNTH factual core"},
     {"state", "ACTIVE"}, {"epistemic_class", "OBSERVED"},
@@ -193,23 +204,27 @@ json ecosystem_projection(const Paths& paths, const fs::path& resources,
       observed_ids.insert(id);
       auto evidence_ref = participant.at("realization_evidence_ref");
       if (evidence_ref.is_null()) evidence_ref = participant.at("registration_evidence_ref");
-      providers_by_surface[id].push_back({
+      json provider{
         {"identity", participant.at("identity")}, {"state", participant.at("state")},
         {"epistemic_class", "OBSERVED"}, {"kind", surface.at("kind")},
         {"media_type", surface.at("media_type")}, {"locator", surface.at("locator")},
         {"evidence_ref", std::move(evidence_ref)}
-      });
+      };
+      if (participant.contains("identity_assurance")) provider["identity_assurance"] = participant.at("identity_assurance");
+      providers_by_surface[id].push_back(std::move(provider));
     }
     for (const auto& surface : participant.at("declared_surfaces")) {
       const auto id = surface.at("id").get<std::string>();
       if (observed_ids.contains(id)) continue;
-      providers_by_surface[id].push_back({
+      json provider{
         {"identity", participant.at("identity")}, {"state", participant.at("state")},
         {"epistemic_class", "DECLARED"},
         {"kind", surface.contains("kind") ? surface.at("kind") : json(nullptr)},
         {"media_type", surface.contains("media_type") ? surface.at("media_type") : json(nullptr)},
         {"locator", nullptr}, {"evidence_ref", participant.at("registration_evidence_ref")}
-      });
+      };
+      if (participant.contains("identity_assurance")) provider["identity_assurance"] = participant.at("identity_assurance");
+      providers_by_surface[id].push_back(std::move(provider));
     }
   }
 
@@ -226,7 +241,7 @@ json ecosystem_projection(const Paths& paths, const fs::path& resources,
   });
   const json topology{{"participants", participants}, {"surfaces", surfaces}, {"relations", relations}};
   return {
-    {"$schema", "urn:synth:schema:ecosystem-projection:0.1.0"}, {"schema_version", "0.1.0"},
+    {"$schema", "urn:synth:schema:ecosystem-projection:0.2.0"}, {"schema_version", "0.2.0"},
     {"generation", sha256_text(topology.dump())}, {"observed_at", iso_timestamp()},
     {"epistemic_class", "OBSERVED"}, {"participants", std::move(participants)},
     {"surfaces", std::move(surfaces)}, {"relations", std::move(relations)}
@@ -639,12 +654,16 @@ void print_help() {
             << "  search <query> --source <source> [--json]\n"
             << "  info <identity> --source <source> [--json]\n"
             << "  installed [--json]\n\n"
+            << "  remote list [--json]\n\n"
             << "State-changing commands:\n"
             << "  evidence [--json]\n"
             << "  install <identity> --source <source> [--json]\n"
             << "  activate <identity> [--json]\n"
             << "  deactivate <identity> [--json]\n"
             << "  remove <identity> [--json]\n\n"
+            << "  remote register <manifest.json> [--json]\n"
+            << "  remote attest <observation.json> [--json]\n"
+            << "  remote remove <identity> [--json]\n\n"
             << "Options:\n"
             << "  --json    Emit a machine-readable representation\n"
             << "  --watch   Stream ecosystem changes as NDJSON; requires --json\n"
@@ -674,7 +693,7 @@ int main(int argc, char** argv) {
     const bool foundation_command = args[0] == "foundation" && args.size() > 1 && args[1] == "verify";
     const bool known_command = args[0] == "status" || args[0] == "surfaces" || args[0] == "relations" ||
                                args[0] == "ecosystem" || args[0] == "resolve" ||
-                               args[0] == "evidence" || foundation_command || realization::handles(args);
+                               args[0] == "evidence" || foundation_command || realization::handles(args) || remote::handles(args);
     if (!known_command) {
       std::cerr << "Unknown command: " << args[0] << "\nEvidence: run 'synth help' for valid commands.\n";
       return 2;
@@ -686,6 +705,7 @@ int main(int argc, char** argv) {
     const auto paths = xdg_paths();
     const auto data = data_root();
     if (realization::handles(args)) return realization::dispatch(args, as_json, realization_roots(paths, data));
+    if (remote::handles(args)) return remote::dispatch(args, as_json, realization_roots(paths, data));
     if (args[0] == "evidence") {
       realization::MutationLock lock(realization_roots(paths, data));
       prepare_evidence_storage(paths);

@@ -163,6 +163,11 @@ registrados, superfícies indexadas e relações observadas. Instalações apare
 como `INSTALLED/DECLARED`; somente witnesses de realizações ativas produzem
 provedores `ACTIVE/OBSERVED`.
 
+Participantes remotos usam contrato separado: `remote register` registra sem
+instalar; `remote attest` recebe observação com expiração. Seus estados são
+`REGISTERED`, `AVAILABLE` ou `UNAVAILABLE`, nunca `ACTIVE`. Garantia de
+identidade é publicada separadamente da disponibilidade.
+
 `synth resolve <surface> --json` implementa descoberta tardia por capacidade e
 retorna todos os provedores ativos observados, sem conhecimento prévio de suas
 identidades. A geração da projeção é um SHA-256 da topologia e permanece estável
@@ -228,7 +233,9 @@ transação. Na ausência de configuração humana, a evidência registra
 - [SYNTH-FOUNDATION-HARDENING-001/v0.1.0](docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md)
 - [SYNTH-REALIZATION-001/v0.1.0](docs/SYNTH-REALIZATION-001-v0.1.0.md)
 - [SYNTH-ECOSYSTEM-PROJECTION-001/v0.1.0](docs/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md)
+- [SYNTH-ECOSYSTEM-PROJECTION-002/v0.2.0](docs/SYNTH-ECOSYSTEM-PROJECTION-002-v0.2.0.md)
 - [SYNTH-LIVE-ECOSYSTEM-001/v0.1.0](docs/SYNTH-LIVE-ECOSYSTEM-001-v0.1.0.md)
+- [SYNTH-REMOTE-PARTICIPANT-001/v0.1.0](docs/SYNTH-REMOTE-PARTICIPANT-001-v0.1.0.md)
 
 ## Licença
 

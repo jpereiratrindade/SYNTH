@@ -31,7 +31,7 @@ else()
   endif()
 endif()
 
-add_executable(synth src/main.cpp src/realization.cpp)
+add_executable(synth src/main.cpp src/realization.cpp src/remote.cpp)
 set_target_properties(synth PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 target_compile_definitions(synth PRIVATE SYNTH_VERSION="${PROJECT_VERSION}")
 target_compile_options(synth PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
@@ -48,12 +48,16 @@ configure_file(docs/SYNTH-FOUNDATION-CORRECTION-001-v0.1.0.md "${SYNTH_BUILD_DAT
 configure_file(docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md" COPYONLY)
 configure_file(docs/SYNTH-REALIZATION-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-REALIZATION-001-v0.1.0.md" COPYONLY)
 configure_file(docs/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md" COPYONLY)
+configure_file(docs/SYNTH-ECOSYSTEM-PROJECTION-002-v0.2.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-ECOSYSTEM-PROJECTION-002-v0.2.0.md" COPYONLY)
 configure_file(docs/SYNTH-LIVE-ECOSYSTEM-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-LIVE-ECOSYSTEM-001-v0.1.0.md" COPYONLY)
+configure_file(docs/SYNTH-REMOTE-PARTICIPANT-001-v0.1.0.md "${SYNTH_BUILD_DATA_DIR}/SYNTH-REMOTE-PARTICIPANT-001-v0.1.0.md" COPYONLY)
 configure_file(schemas/surface.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/surface.schema.json" COPYONLY)
 configure_file(schemas/relation.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/relation.schema.json" COPYONLY)
 configure_file(schemas/artifact-manifest.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/artifact-manifest.schema.json" COPYONLY)
 configure_file(schemas/realization-witness.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/realization-witness.schema.json" COPYONLY)
 configure_file(schemas/ecosystem-projection.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/ecosystem-projection.schema.json" COPYONLY)
+configure_file(schemas/remote-participant.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/remote-participant.schema.json" COPYONLY)
+configure_file(schemas/remote-observation.schema.json "${SYNTH_BUILD_DATA_DIR}/schemas/remote-observation.schema.json" COPYONLY)
 
 include(GNUInstallDirs)
 install(TARGETS synth RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
@@ -65,7 +69,9 @@ install(FILES
   docs/SYNTH-FOUNDATION-HARDENING-001-v0.1.0.md
   docs/SYNTH-REALIZATION-001-v0.1.0.md
   docs/SYNTH-ECOSYSTEM-PROJECTION-001-v0.1.0.md
+  docs/SYNTH-ECOSYSTEM-PROJECTION-002-v0.2.0.md
   docs/SYNTH-LIVE-ECOSYSTEM-001-v0.1.0.md
+  docs/SYNTH-REMOTE-PARTICIPANT-001-v0.1.0.md
   DESTINATION ${CMAKE_INSTALL_DATADIR}/synth
 )
 install(DIRECTORY schemas/ DESTINATION ${CMAKE_INSTALL_DATADIR}/synth/schemas)
@@ -80,6 +86,11 @@ if(BUILD_TESTING)
   add_test(
     NAME realization-integration
     COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/realization_integration.sh
+            $<TARGET_FILE:synth> ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  add_test(
+    NAME remote-integration
+    COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/remote_integration.sh
             $<TARGET_FILE:synth> ${CMAKE_CURRENT_SOURCE_DIR}
   )
 endif()
