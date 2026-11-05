@@ -26,10 +26,11 @@
         "identity": { "type": "string", "pattern": "^[a-z][a-z0-9.-]*$" },
         "version": { "type": "string", "minLength": 1 },
         "endpoint": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "nonce": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "issued_at": { "type": "string", "format": "date-time" },
         "expires_at": { "type": "string", "format": "date-time" }
       },
-      "required": ["identity", "version", "endpoint", "issued_at", "expires_at"]
+      "required": ["identity", "version", "endpoint", "nonce", "issued_at", "expires_at"]
     },
     "surface": {
       "type": "object", "additionalProperties": false,

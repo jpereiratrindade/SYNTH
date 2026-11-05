@@ -29,7 +29,7 @@ descrito abaixo. A projeção deve preservar essa distinção.
 O registro pode declarar `VERIFIED/ed25519-signed-manifest-v1` somente quando
 fixa uma chave pública Ed25519 e seu fingerprint SHA-256. Cada observação deve
 carregar uma declaração assinada contendo exatamente identidade, versão,
-endpoint, emissão e expiração. O SYNTH verifica a assinatura, o fingerprint,
+endpoint, nonce de desafio, emissão e expiração. O SYNTH verifica a assinatura, o fingerprint,
 a correspondência com o registro e a validade antes de persistir a atestação.
 
 Alteração de qualquer campo, chave divergente ou prova expirada é rejeitada.

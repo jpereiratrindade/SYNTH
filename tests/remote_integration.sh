@@ -61,7 +61,7 @@ PY
 
 python3 - "$root/statement.json" <<'PY'
 import json, pathlib, sys
-value={"endpoint":"http://127.0.0.1:9997/","expires_at":"2099-01-01T00:00:00Z","identity":"verified-test","issued_at":"2098-01-01T00:00:00Z","version":"1.0.0"}
+value={"endpoint":"http://127.0.0.1:9997/","expires_at":"2099-01-01T00:00:00Z","identity":"verified-test","issued_at":"2098-01-01T00:00:00Z","nonce":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","version":"1.0.0"}
 pathlib.Path(sys.argv[1]).write_text(json.dumps(value,separators=(',',':'),sort_keys=True))
 PY
 openssl pkeyutl -sign -rawin -inkey "$root/identity.key" -in "$root/statement.json" -out "$root/statement.sig"
