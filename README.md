@@ -233,3 +233,9 @@ transação. Na ausência de configuração humana, a evidência registra
 ## Licença
 
 GPL-3.0-only. Veja [LICENSE](LICENSE).
+
+## Premissas de desenvolvimento
+
+**Simples, leve. Sempre pronto. Sempre incompleto!**
+
+[Significado e símbolos das premissas](docs/sister-principles/README.md).
